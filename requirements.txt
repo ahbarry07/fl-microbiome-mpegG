@@ -1,0 +1,42 @@
+# ============================================
+# REQUIREMENTS.TXT
+# Dépendances pour le projet Microbiome FL
+# ============================================
+
+# === Core Data Science ===
+numpy
+pandas
+scipy
+scikit-learn
+
+# === Machine Learning Advanced ===
+xgboost
+lightgbm
+imbalanced-learn
+# === Federated Learning ===
+flwr  # Flower framework
+
+# === Visualization ===
+matplotlib
+seaborn
+plotly
+
+# === Bioinformatics ===
+biopython
+scikit-bio  # Science Kit for Biology (diversité, metrics)
+
+# === File Processing ===
+h5py
+joblib
+
+# === Progress Bars ===
+tqdm
+
+# === Jupyter ===
+jupyter
+ipykernel
+ipywidgets
+
+# === Utils ===
+pyyaml
+python-dotenv
