@@ -8,30 +8,34 @@ pct_*/qualité issues de data_processing.py.
 CATALOGUE DES FEATURES (94 au total pour k=3)
 ----------------------------------------------
 
-Famille              | Features                              | N
----------------------|---------------------------------------|----
-Fractions brutes     | pct_A, pct_T, pct_C, pct_G, pct_GC   |  5
-Qualité brute        | avg_quality, num_reads, avg_read_length|  3
-Ratios biologiques   | gc_skew, at_skew, R/Y, entropie       |  4
-K-mers (k=3)         | kmer_AAA … kmer_TTT                   | 64
-Dinucléotides rho    | di_AA … di_TT                         | 16
-Qualité différenciée | pct_bases_q20, pct_bases_q30          |  2
+Famille              | Features                                | N
+---------------------|-----------------------------------------|----
+Fractions brutes     | pct_A, pct_T, pct_C, pct_G, pct_GC      |  5
+Qualité brute        | avg_quality, num_reads, avg_read_length |  3
+Ratios biologiques   | gc_skew, at_skew, R/Y, entropie         |  4
+K-mers (k=3)         | kmer_AAA … kmer_TTT                     | 64
+Dinucléotides rho    | di_AA … di_TT                           | 16
+Qualité différenciée | pct_bases_q20, pct_bases_q30            |  2
 
-PIPELINE DE TRAITEMENT RAPIDE
-------------------------------
-Le chemin critique utilise `extract_fastq_features` (conçue pour
-ProcessPoolExecutor) :
-  1. `_parse_fastq_bytes`     — lecture FASTQ native en bytes (pas BioPython)
-  2. `_encode_sequences`      — table de correspondance ASCII → {0,1,2,3,4}
-                                appliquée en une passe numpy sur la
-                                concaténation de tous les reads
-  3. `_kmer_from_encoded`     — k décalages numpy + bincount (pas de tableau 2D)
-  4. `_di_from_encoded`       — bincount sur paires consécutives valides
-  5. qualité                  — np.frombuffer sur la concaténation des quals,
-                                soustraction Phred+33 vectorisée
+PIPELINE DE TRAITEMENT (Section 4b — par blocs)
+-------------------------------------------------
+`extract_fastq_features` lit chaque fichier FASTQ par blocs de 200 000 reads,
+ce qui maintient le pic RAM à ~160 MB/worker quelle que soit la taille du fichier
+(certains fichiers contiennent jusqu'à 35 M reads x 400 bp = 14 GB).
+Conçue pour ProcessPoolExecutor — un appel par fichier, par worker.
 
-Les fonctions Sections 2-4 (Python pur, Counter) sont conservées comme
-référence de lisibilité ; `extract_fastq_features` est à utiliser en production.
+  Par bloc :
+    1. Lecture binaire native (4 lignes FASTQ : @header / seq / + / qual)
+    2. `_encode_sequences`  — ASCII → {A=0, C=1, G=2, T=3, autre=4} via lookup table
+    3. k-mers               — k décalages numpy + bincount → accumulation int64
+    4. dinucléotides        — bincount sur paires valides → accumulation int64
+    5. qualité              — frombuffer - 33, sommes q20/q30 cumulées
+
+  Après tous les blocs :
+    normalisation des comptes accumulés → fréquences k-mers et rho(XY)
+
+Note : les fonctions Sections 2-4 (Python pur, Counter) sont marquées
+[NON UTILISÉE] — conservées pour référence algorithmique uniquement.
 
 RÉFÉRENCES
 ----------
@@ -189,9 +193,12 @@ def _encode_sequences(sequences):
     Accepte des séquences str ou bytes.
     """
     if sequences and isinstance(sequences[0], (bytes, bytearray)):
+        # Séquences déjà en bytes : jointure directe sans encodage Python
         combined = np.frombuffer(b'N'.join(sequences), dtype=np.uint8)
     else:
+        # Séquences str : encode en bytes puis jointure
         combined = np.frombuffer('N'.join(sequences).encode(), dtype=np.uint8)
+    # Indexation vectorisée : chaque valeur ASCII devient son indice de base {0,1,2,3,4}
     return _BASE_TABLE[combined]
 
 
@@ -217,29 +224,39 @@ def compute_kmer_frequencies_fast(sequences, k=3):
     """
     encoded   = _encode_sequences(sequences)
     all_kmers = _all_kmers(k)
-    m         = len(encoded) - k + 1
+    m         = len(encoded) - k + 1   # nombre de positions k-mer possibles
 
     if m <= 0:
         return {f'kmer_{km}': 0.0 for km in all_kmers}
 
+    # k vues décalées du tableau encodé — O(1), pas de copie
+    # shifts[0] = bases à la position i, shifts[1] = position i+1, etc.
     shifts = [encoded[i:i + m] for i in range(k)]
+
+    # Masque : True seulement aux positions où les k bases sont toutes valides (< 4)
+    # Élimine automatiquement les k-mers chevauchant un séparateur 'N'
     valid  = shifts[0] < 4
     for s in shifts[1:]:
         valid &= s < 4
 
-    # Dtype minimal pour les indices : max théorique = 4*(4^k-1)/3
-    # k=3 → 84 (uint8), k=4 → 340 (uint16), k≥5 → int32
+    # Dtype minimal pour les indices base-4 — évite int64 inutile
+    # k=3 → max 84 → uint8 (1 octet), k=4 → max 340 → uint16, k≥5 → int32
     max_idx   = sum(4 * 4 ** (k - 1 - i) for i in range(k))
     idx_dtype = np.uint8 if max_idx <= 255 else np.uint16 if max_idx <= 65535 else np.int32
-    powers    = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)
-    indices   = np.zeros(m, dtype=idx_dtype)
+
+    # Convertit chaque position en un entier base-4 unique :
+    # indice = b0 * 4^(k-1) + b1 * 4^(k-2) + ... + b(k-1) * 4^0
+    # Ex. (k=3) ACG → 0*16 + 1*4 + 2 = 6
+    powers  = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)
+    indices = np.zeros(m, dtype=idx_dtype)
     for s, p in zip(shifts, powers):
         indices += s.astype(idx_dtype) * p
 
-    vi = indices[valid]
+    vi = indices[valid]   # indices filtrés — uniquement les positions sans 'N'
     if not len(vi):
         return {f'kmer_{km}': 0.0 for km in all_kmers}
 
+    # np.bincount compte les occurrences de chaque indice en C pur
     counts = np.bincount(vi, minlength=4 ** k)
     total  = counts.sum()
     return {f'kmer_{km}': int(counts[i]) / total for i, km in enumerate(all_kmers)}
@@ -269,13 +286,20 @@ def compute_relative_dinucleotide_frequencies_fast(sequences):
     """
     encoded = _encode_sequences(sequences)
     all_di  = _all_kmers(2)
-    valid   = encoded < 4
+    valid   = encoded < 4   # masque des bases A/C/G/T (exclut 'N' et séparateurs)
 
     if valid.sum() < 2:
         return {f'di_{d}': 1.0 for d in all_di}
 
+    # Fréquences mononucléotidiques : f(A), f(C), f(G), f(T)
     mono_counts = np.bincount(encoded[valid], minlength=4).astype(float)
+
+    # Paires valides : les deux bases consécutives doivent être A/C/G/T
+    # Exclut automatiquement les paires chevauchant un séparateur 'N'
     valid_pairs = valid[:-1] & valid[1:]
+
+    # Indice base-4 unique par paire : AA=0, AC=1, ..., TT=15
+    # base1 * 4 + base2 → valeur dans [0, 15]
     di_indices  = encoded[:-1][valid_pairs] * 4 + encoded[1:][valid_pairs]
     di_counts   = np.bincount(di_indices, minlength=16).astype(float)
 
@@ -283,13 +307,14 @@ def compute_relative_dinucleotide_frequencies_fast(sequences):
     if total_mono == 0 or total_di == 0:
         return {f'di_{d}': 1.0 for d in all_di}
 
-    f_mono = mono_counts / total_mono
-    f_di   = di_counts   / total_di
+    f_mono = mono_counts / total_mono   # fréquences de chaque base
+    f_di   = di_counts   / total_di     # fréquences de chaque dinucléotide
 
     result = {}
     for i, di in enumerate(all_di):
         x, y  = 'ACGT'.index(di[0]), 'ACGT'.index(di[1])
         denom = f_mono[x] * f_mono[y]
+        # rho(XY) = f(XY) / (f(X) * f(Y)) : 1 = indépendance, >1 = sur-représenté
         result[f'di_{di}'] = float(f_di[i] / denom) if denom > 0 else 1.0
     return result
 
@@ -339,63 +364,77 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     total_bases  = 0
     n_reads      = 0
 
-    # Dtype minimal pour les indices k-mers (calculé une seule fois)
+    # Précalculé une seule fois pour tous les blocs (évite de recréer à chaque itération)
+    # k=3 → max_idx=84 → uint8 (1 octet/position) ; k=4 → uint16 ; k≥5 → int32
     max_idx   = sum(4 * 4 ** (k - 1 - i) for i in range(k))
     idx_dtype = np.uint8 if max_idx <= 255 else np.uint16 if max_idx <= 65535 else np.int32
-    powers    = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)
+    powers    = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)  # [4^(k-1), ..., 1]
 
     try:
         with open(fastq_path, 'rb') as fh:
             while True:
+                # ── Lecture d'un bloc de chunk_size reads ──────────────────────
+                # Un read FASTQ = 4 lignes : @header / séquence / + / qualité
                 seqs_chunk  = []
                 quals_chunk = []
                 for _ in range(chunk_size):
                     header = fh.readline()
-                    if not header:
+                    if not header:          # fin de fichier
                         break
-                    seqs_chunk.append(fh.readline().rstrip(b'\n'))
-                    fh.readline()                          # ligne +
-                    quals_chunk.append(fh.readline().rstrip(b'\n'))
+                    seqs_chunk.append(fh.readline().rstrip(b'\n'))   # séquence
+                    fh.readline()                                      # ligne "+" (ignorée)
+                    quals_chunk.append(fh.readline().rstrip(b'\n'))  # qualités Phred+33
 
-                if not seqs_chunk:
+                if not seqs_chunk:          # bloc vide → tout le fichier a été lu
                     break
                 n_reads += len(seqs_chunk)
 
-                # --- k-mers + dinucléotides ---
+                # ── K-mers + dinucléotides ─────────────────────────────────────
+                # Encode le bloc : liste de bytes → tableau uint8 {0,1,2,3,4}
+                # Les 'N' entre reads empêchent les k-mers inter-reads
                 encoded = _encode_sequences(seqs_chunk)
-                del seqs_chunk
+                del seqs_chunk   # libère ~80 MB
 
-                m = len(encoded) - k + 1
+                m = len(encoded) - k + 1   # positions k-mer valides dans ce bloc
                 if m > 0:
+                    # k vues décalées O(1) du tableau encodé
                     shifts  = [encoded[i:i + m] for i in range(k)]
+                    # Masque : True là où les k bases sont toutes A/C/G/T (pas de 'N')
                     valid   = shifts[0] < 4
                     for s in shifts[1:]:
                         valid &= s < 4
+                    # Indice base-4 : b0*4^(k-1) + b1*4^(k-2) + ... + b(k-1)
                     indices = np.zeros(m, dtype=idx_dtype)
                     for s, p in zip(shifts, powers):
                         indices += s.astype(idx_dtype) * p
-                    vi = indices[valid]
+                    vi = indices[valid]   # indices des positions sans 'N'
                     if len(vi):
+                        # Accumulation : bincount additionne les comptes du bloc
+                        # aux comptes globaux (propriété additive des fréquences brutes)
                         kmer_counts += np.bincount(vi, minlength=4 ** k)
 
                 valid_bases = encoded < 4
                 if valid_bases.sum() >= 2:
+                    # Fréquences mononucléotidiques du bloc
                     mono_accum += np.bincount(encoded[valid_bases],
                                               minlength=4).astype(np.int64)
+                    # Paires : les deux bases adjacentes doivent être valides
                     valid_pairs = valid_bases[:-1] & valid_bases[1:]
+                    # Indice paire : base1 * 4 + base2 → [0, 15]
                     di_idx = (encoded[:-1][valid_pairs].astype(np.uint8) * 4
                               + encoded[1:][valid_pairs].astype(np.uint8))
                     di_accum += np.bincount(di_idx, minlength=16).astype(np.int64)
 
-                del encoded
+                del encoded   # libère ~80 MB avant de traiter les qualités
 
-                # --- qualité ---
-                q_bytes = b''.join(quals_chunk)
+                # ── Qualité Phred ──────────────────────────────────────────────
+                q_bytes = b''.join(quals_chunk)   # concatène les lignes de qualité
                 del quals_chunk
+                # Phred+33 : valeur ASCII − 33 = score de qualité (0–40 typiquement)
                 q_arr = np.frombuffer(q_bytes, dtype=np.uint8).astype(np.int16) - 33
                 del q_bytes
-                q20_sum     += int((q_arr >= 20).sum())
-                q30_sum     += int((q_arr >= 30).sum())
+                q20_sum     += int((q_arr >= 20).sum())   # bases Q≥20
+                q30_sum     += int((q_arr >= 30).sum())   # bases Q≥30
                 total_bases += len(q_arr)
 
     except Exception:
@@ -404,27 +443,30 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     if n_reads == 0:
         return None
 
-    # --- Normalisation k-mers ---
+    # ── Normalisation finale (une seule fois sur les comptes totaux) ───────────
+
+    # K-mers : comptes bruts → fréquences relatives
     kmer_total = kmer_counts.sum()
     kmer_f = ({f'kmer_{km}': int(kmer_counts[i]) / kmer_total
                for i, km in enumerate(all_kmers)}
               if kmer_total > 0 else
               {f'kmer_{km}': 0.0 for km in all_kmers})
 
-    # --- Normalisation dinucléotides : rho(XY) = f(XY) / (f(X)·f(Y)) ---
+    # Dinucléotides : comptes bruts → rho(XY) = f(XY) / (f(X) · f(Y))
     total_mono = mono_accum.sum()
     total_di   = di_accum.sum()
     if total_mono > 0 and total_di > 0:
-        f_mono = mono_accum.astype(float) / total_mono
-        f_di   = di_accum.astype(float)  / total_di
+        f_mono = mono_accum.astype(float) / total_mono   # f(A), f(C), f(G), f(T)
+        f_di   = di_accum.astype(float)  / total_di      # f(AA), f(AC), ..., f(TT)
         di_f = {}
         for i, di in enumerate(all_di):
             x, y  = 'ACGT'.index(di[0]), 'ACGT'.index(di[1])
-            denom = f_mono[x] * f_mono[y]
+            denom = f_mono[x] * f_mono[y]   # fréquence attendue si indépendance
             di_f[f'di_{di}'] = float(f_di[i] / denom) if denom > 0 else 1.0
     else:
-        di_f = {f'di_{d}': 1.0 for d in all_di}
+        di_f = {f'di_{d}': 1.0 for d in all_di}   # rho=1 par défaut si pas de données
 
+    # Qualité : fractions de bases dépassant les seuils Q20 et Q30
     qual_f = {
         'pct_bases_q20': q20_sum / total_bases if total_bases > 0 else 0.0,
         'pct_bases_q30': q30_sum / total_bases if total_bases > 0 else 0.0,
