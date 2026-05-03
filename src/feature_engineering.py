@@ -554,8 +554,7 @@ def _lz_complexity_sequence(seq: bytes) -> float:
     return min(c / max_c, 1.0)
  
  
-def compute_sequence_complexity_features(fastq_path: str,
-                                          sample_size: int = 2000) -> Optional[Dict]:
+def compute_sequence_complexity_features(fastq_path: str, sample_size: int = 2000) -> Optional[Dict]:
     """
     Extrait les features de complexité séquentielle depuis un FASTQ.
  
@@ -568,8 +567,6 @@ def compute_sequence_complexity_features(fastq_path: str,
     - read_len_q25   : 1er quartile des longueurs
     - read_len_q75   : 3e quartile des longueurs
  
-    La distribution des longueurs est un proxy de la région hypervariable
-    ciblée (V3-V4 ~450 pb vs V1-V3 ~300 pb) et donc du protocole utilisé.
  
     Parameters
     ----------
@@ -780,7 +777,7 @@ def build_taxonomic_features(fastq_paths: List[str],
     - Skin   : Staphylococcus, Cutibacterium, Corynebacterium
     (Knights et al., 2011, Nature Methods)
  
-    DB recommandée pour amplicons 16S — construction (une seule fois, ~30 min) :
+    DB recommandée pour amplicons 16S — construction (une seule fois) :
         mkdir -p data/kraken2_silva_db
         docker run --rm -v $(pwd)/data/kraken2_silva_db:/db \\
                staphb/kraken2 kraken2-build --special silva --db /db
