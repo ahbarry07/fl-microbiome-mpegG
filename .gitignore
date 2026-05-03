@@ -1,6 +1,5 @@
 data/
-results/figures/
-ressults/metics/
+results/
 .claude/
 README_GUIDE_COMPLET.md
 VariablesDefinitions.pdf

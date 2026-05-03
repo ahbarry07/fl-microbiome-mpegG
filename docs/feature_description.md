@@ -1,10 +1,10 @@
-# Description des features — Dataset final (94 features)
+# Description des features — Dataset final (583 features)
 
 Le dataset final est produit par `src/feature_engineering.py` et sauvegardé dans
 `data/processed/train_engineered.csv` / `val_engineered.csv` / `test_engineered.csv`.
 
 Chaque ligne correspond à un échantillon FASTQ (un prélèvement microbiome).  
-Les features sont regroupées en 6 familles.
+Les features sont regroupées en 8 familles.
 
 ---
 
@@ -18,7 +18,9 @@ Les features sont regroupées en 6 familles.
 | K-mers (k=3) | kmer_AAA … kmer_TTT | 64 |
 | Dinucléotides relatifs rho | di_AA … di_TT | 16 |
 | Qualité Phred différenciée | pct_bases_q20, pct_bases_q30 | 2 |
-| **TOTAL** | | **94** |
+| Complexité séquentielle | lz_complexity, pct_ambiguous, read_len_* | 7 |
+| Taxonomie Kraken2 | kraken_{genus}, kraken_unclassified, kraken_n_genera | ≤482 |
+| **TOTAL** | | **~583** |
 
 ---
 
@@ -220,21 +222,135 @@ ce qui permet de détecter des échantillons partiellement dégradés.
 
 ---
 
+---
+
+## 7. Complexité séquentielle (7 features)
+
+Calculées par `compute_sequence_complexity_features` sur un échantillon de 2 000 reads par fichier FASTQ.
+
+| Feature | Définition | Plage |
+|---------|-----------|-------|
+| `lz_complexity` | Complexité de Lempel-Ziv (LZ76) normalisée, moyennée sur 2 000 reads | [0, 1] |
+| `pct_ambiguous` | Fraction de bases ambiguës (N, R, Y, …) sur 2 000 reads | [0, 1] |
+| `read_len_std` | Écart-type des longueurs des reads (en bp) | ≥ 0 |
+| `read_len_min` | Longueur minimale des reads (en bp) | > 0 |
+| `read_len_max` | Longueur maximale des reads (en bp) | > 0 |
+| `read_len_q25` | 1er quartile (Q25) de la distribution des longueurs | > 0 |
+| `read_len_q75` | 3e quartile (Q75) de la distribution des longueurs | > 0 |
+
+### `lz_complexity`
+
+```
+LZ76 : nombre de sous-chaînes distinctes nécessaires pour reconstruire la séquence
+Normalisation : c / (n / log2(n + 1))
+```
+
+Proxy de la **diversité taxonomique** de l'échantillon : un microbiome riche en espèces
+produit des reads plus variés (LZ proche de 1), tandis qu'un microbiome dominé par
+une espèce produit des patterns répétitifs (LZ proche de 0).
+
+> **Note :** LZ76 est coûteux (O(n²)) et est donc calculé sur 2 000 reads seulement
+> (`sample_size=2000`), un sous-échantillon représentatif du fichier entier.
+
+### `pct_ambiguous`
+
+Fraction de bases codées en IUPAC hors {A, C, G, T} (ex. N = base inconnue, R = A ou G).
+Un taux élevé indique une **qualité de séquençage dégradée** ou des inhibiteurs PCR dans
+le prélèvement.
+
+### Distribution des longueurs (`read_len_*`)
+
+La distribution des longueurs de reads est un proxy du **protocole d'amplification** utilisé :
+- Région V3-V4 (~450 bp) → reads plus longs avec peu de variation
+- Région V1-V3 (~300 bp) → reads plus courts
+
+`read_len_std` capture l'hétérogénéité du protocole au sein d'un même échantillon.
+
+---
+
+## 8. Taxonomie Kraken2 (≤482 features)
+
+Calculées par `run_kraken2_on_fastq` + `build_taxonomic_features` via Docker (image `staphb/kraken2`),
+base de données Silva 16S (`data/kraken2_silva_db`).
+
+### Features générées
+
+| Feature | Définition | Plage |
+|---------|-----------|-------|
+| `kraken_{genus}` | Abondance relative du genre *genus* dans l'échantillon | [0, 1] |
+| `kraken_unclassified` | Fraction de reads non classifiés par Kraken2 | [0, 1] |
+| `kraken_n_genera` | Nombre de genres distincts détectés dans l'échantillon | ≥ 0 |
+
+### Filtrage par prévalence
+
+Kraken2 détecte en moyenne ~2 680 genres distincts sur l'ensemble des échantillons.
+Seuls les genres présents dans **au moins 5 % des échantillons** (`min_prevalence=0.05`)
+sont conservés pour éviter la haute dimensionnalité liée aux genres rares.
+
+En pratique sur ce dataset :
+- Genres détectés : ~2 680
+- Genres conservés (prévalence ≥ 5 %) : **480**
+- Features totales Kraken2 : **482** (480 genres + `kraken_unclassified` + `kraken_n_genera`)
+
+### Justification biologique
+
+Les abondances taxonomiques sont la feature la plus directement interprétable
+pour la classification par site corporel. Chaque site a des signatures bactériennes
+connues :
+
+| Site | Genres caractéristiques |
+|------|------------------------|
+| Stool | *Prevotella*, *Bacteroides*, *Faecalibacterium* |
+| Mouth | *Streptococcus*, *Veillonella*, *Prevotella* |
+| Nasal | *Corynebacterium*, *Staphylococcus*, *Dolosigranulum* |
+| Skin | *Staphylococcus*, *Cutibacterium*, *Corynebacterium* |
+
+*(Knights et al., 2011, Nature Methods — HMP body-site classification)*
+
+### Pipeline Kraken2
+
+```
+Pour chaque fichier FASTQ :
+  kraken2 --db silva_db --report <filename>.kraken2_report --output /dev/null <fastq>
+  │
+  ▼
+  Parser le rapport TSV (colonnes : %reads, n_clade, n_direct, rank, taxid, name)
+    - Lignes rank='G' → kraken_{genus} = pct/100
+    - Ligne  rank='U' → kraken_unclassified = pct/100
+  │
+  ▼
+  Matrice (n_samples × n_genera) → fillna(0.0)
+  Filtrage : genres avec (count > 0) dans ≥ 5% des échantillons
+```
+
+> **Alignement test/train :** les genres présents dans le train mais absents du test
+> sont remplis à 0 (32 colonnes dans ce dataset). Seul le filtrage de prévalence
+> du train est appliqué — le test utilise exactement les mêmes colonnes que le train.
+
+*(Wood et al., 2019, Genome Biology — Kraken2 ultrafast metagenomic classification)*
+
+---
+
 ## Source et pipeline de calcul
 
 ```
 data/raw/TrainFiles/*.fastq
         │
         ▼
-data_processing.py          → pct_A/T/C/G/GC, avg_quality, num_reads, avg_read_length
+data_processing.py
+  extract_all_fastq_features()   → pct_A/T/C/G/GC, avg_quality, num_reads, avg_read_length
         │
         ▼
 feature_engineering.py
-  build_features()          → gc_skew, at_skew, purine_pyrimidine_ratio, nucleotide_entropy
-  extract_fastq_features()  → kmer_*, di_*, pct_bases_q20, pct_bases_q30
+  build_features()               → gc_skew, at_skew, purine_pyrimidine_ratio, nucleotide_entropy
+  extract_fastq_features()       → kmer_*, di_*, pct_bases_q20, pct_bases_q30
+  compute_sequence_complexity_features()
+                                 → lz_complexity, pct_ambiguous, read_len_*
+  build_taxonomic_features()     → kraken_{genus}, kraken_unclassified, kraken_n_genera
         │
         ▼
-data/processed/train_engineered.csv   (N_train × 94)
-data/processed/val_engineered.csv     (N_val   × 94)
-data/processed/test_engineered.csv    (N_test  × 94)
+data/processed/train_engineered.csv   (2 901 × 587)   ← avant split
+data/processed/val_engineered.csv     (438   × 587)
+data/processed/test_engineered.csv    (1 068 × 584)
+data/processed/feature_cols.csv       (583 feature names)
 ```

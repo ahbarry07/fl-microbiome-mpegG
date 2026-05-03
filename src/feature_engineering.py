@@ -217,128 +217,13 @@ def _encode_sequences(sequences):
     return _BASE_TABLE[combined]
 
 
-def compute_kmer_frequencies_fast(sequences, k=3):
-    """
-    Fréquences relatives des 4^k k-mers — version numpy vectorisée.
-
-    Algorithme :
-      1. `_encode_sequences` : concaténation + lookup table → tableau uint8 de longueur n
-      2. k tableaux décalés (vues O(1) sans copie) : encoded[0:n-k+1], ..., encoded[k-1:n]
-      3. Masque booléen : positions où les k bases sont toutes dans {A,C,G,T} (< 4)
-      4. Indice base-4 : sum(shift[i] * 4^(k-1-i)) pour les positions valides
-      5. np.bincount → comptage en C pur
-
-    Parameters
-    ----------
-    sequences : list of str ou list of bytes
-    k : int  — longueur des k-mers (3 → 64 features)
-
-    Returns
-    -------
-    dict : {f'kmer_{km}': fréquence_relative} pour les 4^k k-mers
-    """
-    encoded   = _encode_sequences(sequences)
-    all_kmers = _all_kmers(k)
-    m         = len(encoded) - k + 1   # nombre de positions k-mer possibles
-
-    if m <= 0:
-        return {f'kmer_{km}': 0.0 for km in all_kmers}
-
-    # shifts[0] = bases à la position i, shifts[1] = position i+1, etc.
-    shifts = [encoded[i:i + m] for i in range(k)]
-
-    # Masque : True seulement aux positions où les k bases sont toutes valides (< 4)
-    # Élimine automatiquement les k-mers chevauchant un séparateur 'N'
-    valid  = shifts[0] < 4
-    for s in shifts[1:]:
-        valid &= s < 4
-
-    # k=3 → max 84 → uint8 (1 octet), k=4 → max 340 → uint16, k≥5 → int32
-    max_idx   = sum(4 * 4 ** (k - 1 - i) for i in range(k))
-    idx_dtype = np.uint8 if max_idx <= 255 else np.uint16 if max_idx <= 65535 else np.int32
-
-    # Convertit chaque position en un entier base-4 unique :
-    # indice = b0 * 4^(k-1) + b1 * 4^(k-2) + ... + b(k-1) * 4^0
-    # Ex. (k=3) ACG → 0*16 + 1*4 + 2 = 6
-    powers  = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)
-    indices = np.zeros(m, dtype=idx_dtype)
-    for s, p in zip(shifts, powers):
-        indices += s.astype(idx_dtype) * p
-
-    vi = indices[valid]   # indices filtrés — uniquement les positions sans 'N'
-    if not len(vi):
-        return {f'kmer_{km}': 0.0 for km in all_kmers}
-
-    # np.bincount compte les occurrences de chaque indice en C pur
-    counts = np.bincount(vi, minlength=4 ** k)
-    total  = counts.sum()
-    return {f'kmer_{km}': int(counts[i]) / total for i, km in enumerate(all_kmers)}
-
-
-def compute_relative_dinucleotide_frequencies_fast(sequences):
-    """
-    Fréquences relatives des 16 dinucléotides — version numpy vectorisée.
-
-    rho(XY) = f(XY) / (f(X) · f(Y))
-
-    Algorithme :
-      1. `_encode_sequences` → tableau encodé de longueur n
-      2. np.bincount sur les bases valides (< 4) → fréquences mononucléotidiques
-      3. Masque des paires valides : encoded[i] < 4 ET encoded[i+1] < 4
-         (les paires chevauchant un séparateur 'N' sont exclues automatiquement)
-      4. Indice de dinucléotide : encoded[i]*4 + encoded[i+1]
-      5. np.bincount → f(XY), division vectorisée pour obtenir rho(XY)
-
-    Parameters
-    ----------
-    sequences : list of str ou list of bytes
-
-    Returns
-    -------
-    dict : {f'di_{XY}': rho(XY)} pour les 16 dinucléotides
-    """
-    encoded = _encode_sequences(sequences)
-    all_di  = _all_kmers(2)
-    valid   = encoded < 4   # masque des bases A/C/G/T (exclut 'N' et séparateurs)
-
-    if valid.sum() < 2:
-        return {f'di_{d}': 1.0 for d in all_di}
-
-    # Fréquences mononucléotidiques : f(A), f(C), f(G), f(T)
-    mono_counts = np.bincount(encoded[valid], minlength=4).astype(float)
-
-    # Paires valides : les deux bases consécutives doivent être A/C/G/T
-    # Exclut automatiquement les paires chevauchant un séparateur 'N'
-    valid_pairs = valid[:-1] & valid[1:]
-
-    # Indice base-4 unique par paire : AA=0, AC=1, ..., TT=15
-    # base1 * 4 + base2 → valeur dans [0, 15]
-    di_indices  = encoded[:-1][valid_pairs] * 4 + encoded[1:][valid_pairs]
-    di_counts   = np.bincount(di_indices, minlength=16).astype(float)
-
-    total_mono, total_di = mono_counts.sum(), di_counts.sum()
-    if total_mono == 0 or total_di == 0:
-        return {f'di_{d}': 1.0 for d in all_di}
-
-    f_mono = mono_counts / total_mono   # fréquences de chaque base
-    f_di   = di_counts   / total_di     # fréquences de chaque dinucléotide
-
-    result = {}
-    for i, di in enumerate(all_di):
-        x, y  = 'ACGT'.index(di[0]), 'ACGT'.index(di[1])
-        denom = f_mono[x] * f_mono[y]
-        # rho(XY) = f(XY) / (f(X) * f(Y)) : 1 = indépendance, >1 = sur-représenté
-        result[f'di_{di}'] = float(f_di[i] / denom) if denom > 0 else 1.0
-    return result
-
-
 
 def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     """
     Worker autonome : lit un FASTQ par blocs et retourne les 82 features de séquence.
 
     Traitement par blocs de `chunk_size` reads pour éviter les pics RAM
-    sur les gros fichiers (jusqu'à 35 M reads × 400 bp = 14 GB par fichier).
+    sur les gros fichiers (jusqu'à 35 M reads x 400 bp = 14 GB par fichier).
     Chaque bloc libère sa mémoire avant le suivant ; le pic par bloc est ~160 MB
     quelle que soit la taille du fichier.
 
@@ -348,10 +233,10 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     Pipeline par bloc :
       1. Lecture de `chunk_size` reads (binaire natif, sans BioPython)
       2. `_encode_sequences`  — concaténation + lookup table → uint8
-         → del seqs_chunk     — libère ~80 MB
+         → del seqs_chunk     — libère espace avant de traiter les k-mers
       3. bincount k-mers      — accumulation dans kmer_counts (int64, 64 valeurs)
       4. bincount di-nucl.    — accumulation dans mono_accum / di_accum
-         → del encoded        — libère ~80 MB
+         → del encoded        — libère espace avant de traiter les qualités
       5. qualité              — b''.join + frombuffer - 33, sommes cumulées
          → del quals_chunk, q_bytes
 
@@ -406,20 +291,23 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
                 # Encode le bloc : liste de bytes → tableau uint8 {0,1,2,3,4}
                 # Les 'N' entre reads empêchent les k-mers inter-reads
                 encoded = _encode_sequences(seqs_chunk)
-                del seqs_chunk   # libère ~80 MB
+                del seqs_chunk   # libère espace memoire avant de traiter les k-mers et qualités
 
                 m = len(encoded) - k + 1   # positions k-mer valides dans ce bloc
                 if m > 0:
                     # k vues décalées O(1) du tableau encodé
                     shifts  = [encoded[i:i + m] for i in range(k)]
+
                     # Masque : True là où les k bases sont toutes A/C/G/T (pas de 'N')
                     valid   = shifts[0] < 4
                     for s in shifts[1:]:
                         valid &= s < 4
+
                     # Indice base-4 : b0*4^(k-1) + b1*4^(k-2) + ... + b(k-1)
                     indices = np.zeros(m, dtype=idx_dtype)
                     for s, p in zip(shifts, powers):
                         indices += s.astype(idx_dtype) * p
+                        
                     vi = indices[valid]   # indices des positions sans 'N'
                     if len(vi):
                         # Accumulation : bincount additionne les comptes du bloc
@@ -429,20 +317,21 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
                 valid_bases = encoded < 4
                 if valid_bases.sum() >= 2:
                     # Fréquences mononucléotidiques du bloc
-                    mono_accum += np.bincount(encoded[valid_bases],
-                                              minlength=4).astype(np.int64)
+                    mono_accum += np.bincount(encoded[valid_bases], minlength=4).astype(np.int64)
+
                     # Paires : les deux bases adjacentes doivent être valides
                     valid_pairs = valid_bases[:-1] & valid_bases[1:]
+
                     # Indice paire : base1 * 4 + base2 → [0, 15]
-                    di_idx = (encoded[:-1][valid_pairs].astype(np.uint8) * 4
-                              + encoded[1:][valid_pairs].astype(np.uint8))
+                    di_idx = (encoded[:-1][valid_pairs].astype(np.uint8) * 4 + encoded[1:][valid_pairs].astype(np.uint8))
                     di_accum += np.bincount(di_idx, minlength=16).astype(np.int64)
 
-                del encoded   # libère ~80 MB avant de traiter les qualités
+                del encoded   # libère espace memoire avant de traiter les qualités
 
                 # ── Qualité Phred ──────────────────────────────────────────────
                 q_bytes = b''.join(quals_chunk)   # concatène les lignes de qualité
                 del quals_chunk
+
                 # Phred+33 : valeur ASCII − 33 = score de qualité (0–40 typiquement)
                 q_arr = np.frombuffer(q_bytes, dtype=np.uint8).astype(np.int16) - 33
                 del q_bytes
@@ -456,7 +345,7 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     if n_reads == 0:
         return None
 
-    # ── Normalisation finale (une seule fois sur les comptes totaux) ───────────
+    # ── Normalisation finale ───────────
 
     # K-mers : comptes bruts → fréquences relatives
     kmer_total = kmer_counts.sum()
@@ -501,7 +390,7 @@ def build_features(df: pd.DataFrame,
                    num_reads_col: str = 'num_reads',
                    avg_length_col: str = 'avg_read_length') -> pd.DataFrame:
     """
-    Construit le DataFrame de features ML complet.
+    Construit le DataFrame de features.
 
     Assemble en un seul DataFrame :
     - Fractions nucléotidiques brutes     : pct_A, pct_T, pct_C, pct_G, pct_GC

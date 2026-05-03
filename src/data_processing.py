@@ -51,20 +51,6 @@ def load_data(data_path: str = '../data/raw', file_name: str = 'Train.csv') -> p
     return df
 
 
-def load_all_data(data_path: str = '../data/raw') -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Charge Train.csv, Test.csv et Train_Subjects.csv en une seule fois.
-
-    Returns
-    -------
-    tuple : (train_df, test_df, subjects_df)
-    """
-    train_df    = load_data(data_path, 'Train.csv')
-    test_df     = load_data(data_path, 'Test.csv')
-    subjects_df = load_data(data_path, 'Train_Subjects.csv')
-    return train_df, test_df, subjects_df
-
-
 # ============================================
 # SECTION 2 : DÉCOMPRESSION MPEG-G
 # ============================================
@@ -314,45 +300,6 @@ def merge_with_metadata(fastq_df: pd.DataFrame,
     return merged
 
 
-def handle_missing_values(df: pd.DataFrame,
-                           columns: Optional[List[str]] = None,
-                           strategy: str = 'median') -> pd.DataFrame:
-    """
-    Traite les valeurs manquantes sur les colonnes numériques.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-    columns : list, optionnel
-        Colonnes à traiter (None = toutes les colonnes numériques)
-    strategy : str
-        'median', 'mean', 'mode' ou 'drop'
-
-    Returns
-    -------
-    pd.DataFrame
-    """
-    df_clean = df.copy()
-
-    if columns is None:
-        columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
-
-    if strategy == 'median':
-        for col in columns:
-            df_clean[col].fillna(df_clean[col].median(), inplace=True)
-    elif strategy == 'mean':
-        for col in columns:
-            df_clean[col].fillna(df_clean[col].mean(), inplace=True)
-    elif strategy == 'mode':
-        for col in columns:
-            df_clean[col].fillna(df_clean[col].mode()[0], inplace=True)
-    elif strategy == 'drop':
-        df_clean.dropna(subset=columns, inplace=True)
-
-    print(f"✅ Valeurs manquantes traitées (stratégie : {strategy})")
-    return df_clean
-
-
 def encode_categorical_variables(df: pd.DataFrame,
                                   categorical_cols: Optional[List[str]] = None) -> pd.DataFrame:
     """
@@ -428,66 +375,3 @@ def save_processed_data(df: pd.DataFrame,
     print(f"✅ Sauvegardé : {filepath} {df.shape}")
 
 
-def load_processed_data(filename: str,
-                         data_dir: str = '../data/processed') -> pd.DataFrame:
-    """
-    Charge un DataFrame CSV depuis le dossier processed.
-
-    Parameters
-    ----------
-    filename : str
-    data_dir : str
-
-    Returns
-    -------
-    pd.DataFrame
-    """
-    filepath = Path(data_dir) / filename
-    if not filepath.exists():
-        raise FileNotFoundError(f"{filename} non trouvé dans {data_dir}")
-    df = pd.read_csv(filepath)
-    print(f"✅ Chargé : {filepath} {df.shape}")
-    return df
-
-
-# def check_data_leakage(train_df: pd.DataFrame,
-#                         val_df: pd.DataFrame,
-#                         id_column: str = 'SubjectID') -> bool:
-#     """
-#     Vérifie qu'aucun identifiant n'est commun entre train et validation.
-
-#     Parameters
-#     ----------
-#     train_df : pd.DataFrame
-#     val_df   : pd.DataFrame
-#     id_column : str
-
-#     Returns
-#     -------
-#     bool : True si pas de leakage, False sinon
-#     """
-#     overlap = set(train_df[id_column].unique()) & set(val_df[id_column].unique())
-#     if overlap:
-#         print(f"❌ DATA LEAKAGE : {len(overlap)} {id_column} en commun")
-#         print(f"   Exemples : {list(overlap)[:5]}")
-#         return False
-#     print(f"✅ Pas de data leakage ({id_column})")
-#     return True
-
-
-# ============================================
-# TEST RAPIDE
-# ============================================
-
-# if __name__ == "__main__":
-#     print("=" * 55)
-#     print("TEST — data_processing.py")
-#     print("=" * 55)
-
-#     seq = "ATCGATCGATCGATCG"
-#     fractions = _nucleotide_fractions(seq)
-#     print(f"\n🧪 Test fractions nucléotidiques :")
-#     for k, v in fractions.items():
-#         print(f"   {k} : {v:.4f}")
-
-#     print("\n✅ Module data_processing.py opérationnel")
