@@ -2,20 +2,23 @@
 feature_engineering.py
 =======================
 
-Construction des 94 features ML à partir des fichiers FASTQ et des colonnes
+Construction des features ML à partir des fichiers FASTQ et des colonnes
 pct_*/qualité issues de data_processing.py.
 
-CATALOGUE DES FEATURES (94 au total pour k=3)
-----------------------------------------------
+CATALOGUE DES FEATURES
+-----------------------
 
 Famille              | Features                                | N
----------------------|-----------------------------------------|----
-Fractions brutes     | pct_A, pct_T, pct_C, pct_G, pct_GC      |  5
-Qualité brute        | avg_quality, num_reads, avg_read_length |  3
-Ratios biologiques   | gc_skew, at_skew, R/Y, entropie         |  4
-K-mers (k=3)         | kmer_AAA … kmer_TTT                     | 64
-Dinucléotides rho    | di_AA … di_TT                           | 16
-Qualité différenciée | pct_bases_q20, pct_bases_q30            |  2
+---------------------|-----------------------------------------|------
+Fractions brutes     | pct_A, pct_T, pct_C, pct_G, pct_GC      |    5
+Qualité brute        | avg_quality, num_reads, avg_read_length |    3
+Ratios biologiques   | gc_skew, at_skew, R/Y, entropie         |    4
+K-mers (k=3)         | kmer_AAA … kmer_TTT                     |   64
+Dinucléotides rho    | di_AA … di_TT                           |   16
+Qualité différenciée | pct_bases_q20, pct_bases_q30            |    2
+Complexité séq.      | lz_complexity, pct_ambiguous, read_len_*|    7
+Taxonomie Kraken2    | kraken_{genus}: abondances relatives    | ≤500
+                     | kraken_unclassified, kraken_n_genera    |    2
 
 PIPELINE DE TRAITEMENT (Section 4b — par blocs)
 -------------------------------------------------
@@ -34,22 +37,36 @@ Conçue pour ProcessPoolExecutor — un appel par fichier, par worker.
   Après tous les blocs :
     normalisation des comptes accumulés → fréquences k-mers et rho(XY)
 
-Note : les fonctions Sections 2-4 (Python pur, Counter) sont marquées
-[NON UTILISÉE] — conservées pour référence algorithmique uniquement.
+
+PIPELINE TAXONOMIQUE (Section 7 — Kraken2)
+-------------------------------------------
+`run_kraken2_on_fastq` lance Kraken2 sur un FASTQ et retourne les abondances
+relatives au niveau genus. Kraken2 classe chaque read contre une base de
+données 16S (Silva/Greengenes) et produit un rapport structuré.
+
+`build_taxonomic_features` agrège les rapports de tous les échantillons en
+une matrice (échantillons x genus) normalisée. Seuls les genres présents dans
+au moins `min_prevalence` des échantillons sont conservés pour éviter la
+haute dimensionnalité due aux genres rares.
 
 RÉFÉRENCES
 ----------
 K-mers  : Woloszynek et al. (2019) PLoS Comput Biol ; Reiman et al. (2018) Bioinformatics
 Di-nucl.: Karlin & Burge (1995) Trends Genet ; Deschavanne et al. (1999) Mol Biol Evol
 Skew    : Lobry (1996) Nucleic Acids Research ; Forsdyke & Mortimer (2000) Gene
+Kraken2 : Wood et al. (2019) Genome Biology — ultrafast metagenomic sequence classification
+Taxo 16S: Knights et al. (2011) Nature Methods — body-site classification from OTU features
 """
 
 import numpy as np
 import pandas as pd
-from collections import Counter
+# from collections import Counter
 from itertools import product
-from typing import Tuple
+from typing import Tuple, List, Optional, Dict
 from scipy.stats import entropy as scipy_entropy
+import subprocess
+import shutil
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -154,7 +171,7 @@ def compute_nucleotide_entropy(df: pd.DataFrame,
     -------
     pd.Series (bits, entre 0 et 2)
     """
-    fracs = df[[pct_a_col, pct_t_col, pct_c_col, pct_g_col]].clip(lower=1e-10)
+    fracs = df[[pct_a_col, pct_t_col, pct_c_col, pct_g_col]].clip(lower=1e-10) # évite log(0) en cas de fraction nulle
     entropy_vals = fracs.apply(
         lambda row: scipy_entropy(row.values, base=2), axis=1
     )
@@ -189,8 +206,6 @@ def _encode_sequences(sequences):
 
     Le séparateur 'N' entre deux reads garantit qu'aucun k-mer ne
     chevauche une frontière de read.
-
-    Accepte des séquences str ou bytes.
     """
     if sequences and isinstance(sequences[0], (bytes, bytearray)):
         # Séquences déjà en bytes : jointure directe sans encodage Python
@@ -229,7 +244,6 @@ def compute_kmer_frequencies_fast(sequences, k=3):
     if m <= 0:
         return {f'kmer_{km}': 0.0 for km in all_kmers}
 
-    # k vues décalées du tableau encodé — O(1), pas de copie
     # shifts[0] = bases à la position i, shifts[1] = position i+1, etc.
     shifts = [encoded[i:i + m] for i in range(k)]
 
@@ -239,7 +253,6 @@ def compute_kmer_frequencies_fast(sequences, k=3):
     for s in shifts[1:]:
         valid &= s < 4
 
-    # Dtype minimal pour les indices base-4 — évite int64 inutile
     # k=3 → max 84 → uint8 (1 octet), k=4 → max 340 → uint16, k≥5 → int32
     max_idx   = sum(4 * 4 ** (k - 1 - i) for i in range(k))
     idx_dtype = np.uint8 if max_idx <= 255 else np.uint16 if max_idx <= 65535 else np.int32
@@ -614,3 +627,322 @@ def split_by_subject(df: pd.DataFrame,
 
     return train_df, val_df
 
+
+# ============================================================
+# SECTION 7 : COMPLEXITÉ SÉQUENTIELLE (depuis FASTQ)
+# ============================================================
+ 
+def _lz_complexity_sequence(seq: bytes) -> float:
+    """
+    Complexité de Lempel-Ziv (LZ76) normalisée d'une séquence.
+ 
+    Mesure le nombre de sous-chaînes distinctes nécessaires pour
+    reconstruire la séquence. Valeur proche de 1 = haute complexité
+    (communauté diversifiée), proche de 0 = séquence répétitive.
+ 
+    Utilisée comme proxy de la diversité taxonomique de l'échantillon.
+ 
+    Parameters
+    ----------
+    seq : bytes
+ 
+    Returns
+    -------
+    float : complexité normalisée dans [0, 1]
+    """
+    n = len(seq)
+    if n == 0:
+        return 0.0
+    i, c, l = 0, 1, 1
+    while i + l <= n:
+        if seq[i:i + l] not in seq[:i]:
+            c += 1
+            i += l
+            l = 1
+        else:
+            l += 1
+    max_c = n / np.log2(n + 1) if n > 1 else 1
+    return min(c / max_c, 1.0)
+ 
+ 
+def compute_sequence_complexity_features(fastq_path: str,
+                                          sample_size: int = 2000) -> Optional[Dict]:
+    """
+    Extrait les features de complexité séquentielle depuis un FASTQ.
+ 
+    Features calculées :
+    - lz_complexity  : complexité de Lempel-Ziv moyenne (proxy diversité taxonomique)
+    - pct_ambiguous  : fraction de bases ambiguës N/R/Y/... (qualité du prélèvement)
+    - read_len_std   : écart-type des longueurs (hétérogénéité du protocole)
+    - read_len_min   : longueur minimale des reads
+    - read_len_max   : longueur maximale des reads
+    - read_len_q25   : 1er quartile des longueurs
+    - read_len_q75   : 3e quartile des longueurs
+ 
+    La distribution des longueurs est un proxy de la région hypervariable
+    ciblée (V3-V4 ~450 pb vs V1-V3 ~300 pb) et donc du protocole utilisé.
+ 
+    Parameters
+    ----------
+    fastq_path : str
+    sample_size : int
+        Nombre de reads à analyser pour LZ (coûteux O(n²), limité à 2000)
+ 
+    Returns
+    -------
+    dict ou None si fichier introuvable ou vide
+    """
+    lz_scores   = []
+    lengths     = []
+    n_ambiguous = 0
+    n_total     = 0
+    n_reads     = 0
+ 
+    try:
+        with open(fastq_path, 'rb') as fh:
+            for _ in range(sample_size):
+                fh.readline()                      # @header
+                seq  = fh.readline().rstrip(b'\n')
+                fh.readline()                      # +
+                fh.readline()                      # qualité
+                if not seq:
+                    break
+                n_reads += 1
+                lengths.append(len(seq))
+                seq_upper = seq.upper()
+                # Bases ambiguës = tout ce qui n'est pas A(65) T(84) C(67) G(71)
+                n_ambiguous += sum(1 for b in seq_upper
+                                   if b not in (65, 84, 67, 71))
+                n_total += len(seq)
+                lz_scores.append(_lz_complexity_sequence(seq_upper))
+    except Exception:
+        return None
+ 
+    if n_reads == 0:
+        return None
+ 
+    lengths_arr = np.array(lengths)
+    return {
+        'lz_complexity': float(np.mean(lz_scores)),
+        'pct_ambiguous': n_ambiguous / n_total if n_total > 0 else 0.0,
+        'read_len_std':  float(np.std(lengths_arr)),
+        'read_len_min':  float(np.min(lengths_arr)),
+        'read_len_max':  float(np.max(lengths_arr)),
+        'read_len_q25':  float(np.percentile(lengths_arr, 25)),
+        'read_len_q75':  float(np.percentile(lengths_arr, 75)),
+    }
+ 
+ 
+# ============================================================
+# SECTION 8 : ASSIGNATION TAXONOMIQUE KRAKEN2 (via Docker)
+# ============================================================
+ 
+# Image Docker : docker pull staphb/kraken2
+KRAKEN2_DOCKER_IMAGE = 'staphb/kraken2'
+ 
+ 
+def check_kraken2() -> bool:
+    """
+    Vérifie que Docker est disponible et que l'image staphb/kraken2 est présente.
+ 
+    Returns
+    -------
+    bool
+    """
+    if shutil.which('docker') is None:
+        return False
+    try:
+        result = subprocess.run(
+            ['docker', 'images', '-q', KRAKEN2_DOCKER_IMAGE],
+            capture_output=True, text=True, timeout=10
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+ 
+ 
+def run_kraken2_on_fastq(fastq_path: str,
+                          db_path: str,
+                          threads: int = 4) -> Optional[Dict[str, float]]:
+    """
+    Lance Kraken2 via Docker sur un fichier FASTQ et retourne les abondances
+    relatives au niveau genus.
+ 
+    Kraken2 classifie chaque read en le comparant à une base de données
+    de références génomiques (Silva 16S) via des k-mers. C'est la feature
+    la plus discriminante pour la classification par site corporel.
+    (Wood et al., 2019, Genome Biology)
+ 
+    Le rapport est écrit directement dans le même dossier que le FASTQ
+    (nom : <fastq>.kraken2_report), puis supprimé après lecture.
+    Cela évite tout problème de montage de dossier temporaire dans Docker.
+ 
+    Montages Docker :
+    - fastq_dir → /data/fastq:ro   (lecture seule)
+    - db_path   → /data/db:ro      (lecture seule)
+    Le rapport est écrit via /data/fastq/ (même volume, accès en écriture
+    sur le host même si le flag Docker est :ro car le flag s'applique au
+    container, pas à l'hôte).
+ 
+    Parameters
+    ----------
+    fastq_path : str
+        Chemin vers le fichier FASTQ (absolu ou relatif)
+    db_path : str
+        Chemin vers la base de données Kraken2
+    threads : int
+ 
+    Returns
+    -------
+    dict : {'kraken_Prevotella': 0.23, ...,
+            'kraken_unclassified': 0.12, 'kraken_n_genera': 45.0}
+    ou None si erreur
+    """
+    fastq_path = str(os.path.abspath(fastq_path))
+    db_path    = str(os.path.abspath(db_path))
+ 
+    if not os.path.exists(fastq_path):
+        return None
+ 
+    fastq_dir   = os.path.dirname(fastq_path)
+    fastq_name  = os.path.basename(fastq_path)
+    report_name = fastq_name + '.kraken2_report'
+    report_host = os.path.join(fastq_dir, report_name)  # sur le host
+ 
+    # Chemins dans le container Docker
+    c_fastq  = f'/data/fastq/{fastq_name}'
+    c_db     = '/data/db'
+    c_report = f'/data/fastq/{report_name}'   # même dossier que le FASTQ
+ 
+    cmd = [
+        'docker', 'run', '--rm',
+        '-v', f'{fastq_dir}:/data/fastq',    # pas de :ro — on doit écrire le rapport ici
+        '-v', f'{db_path}:/data/db:ro',
+        KRAKEN2_DOCKER_IMAGE,
+        'kraken2',
+        '--db',      c_db,
+        '--threads', str(threads),
+        '--report',  c_report,
+        '--output',  '/dev/null',             # reads classifiés : non conservés
+        c_fastq
+    ]
+ 
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600
+        )
+        if result.returncode != 0:
+            return None
+ 
+        if not os.path.exists(report_host):
+            return None
+ 
+        # Parser le rapport Kraken2
+        # Format TSV : %reads  n_clade  n_direct  rank  taxid  name
+        genus_abundances = {}
+        n_unclassified   = 0.0
+ 
+        with open(report_host) as rf:
+            for line in rf:
+                parts = line.strip().split('\t')
+                if len(parts) < 6:
+                    continue
+                pct  = float(parts[0])
+                rank = parts[3]
+                name = parts[5].strip()
+ 
+                if rank == 'U':
+                    n_unclassified = pct / 100.0
+                elif rank == 'G':    # genus level uniquement
+                    safe_name = name.replace(' ', '_').replace('/', '_')
+                    genus_abundances[f'kraken_{safe_name}'] = pct / 100.0
+ 
+        return {
+            **genus_abundances,
+            'kraken_unclassified': n_unclassified,
+            'kraken_n_genera':     float(len(genus_abundances)),
+        }
+ 
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:
+        return None
+    finally:
+        # Nettoyage du rapport quelle que soit l'issue
+        if os.path.exists(report_host):
+            os.remove(report_host)
+ 
+ 
+def build_taxonomic_features(fastq_paths: List[str],
+                              db_path: str,
+                              min_prevalence: float = 0.05,
+                              threads: int = 4) -> pd.DataFrame:
+    """
+    Construit la matrice d'abondances taxonomiques pour tous les échantillons.
+ 
+    Lance Kraken2 (via Docker staphb/kraken2) sur chaque FASTQ et agrège
+    les abondances au niveau genus. Seuls les genres présents dans au moins
+    `min_prevalence` des échantillons sont conservés.
+ 
+    Genres discriminants attendus par site :
+    - Stool  : Prevotella, Bacteroides, Faecalibacterium
+    - Mouth  : Streptococcus, Veillonella, Prevotella
+    - Nasal  : Corynebacterium, Staphylococcus, Dolosigranulum
+    - Skin   : Staphylococcus, Cutibacterium, Corynebacterium
+    (Knights et al., 2011, Nature Methods)
+ 
+    DB recommandée pour amplicons 16S — construction (une seule fois, ~30 min) :
+        mkdir -p data/kraken2_silva_db
+        docker run --rm -v $(pwd)/data/kraken2_silva_db:/db \\
+               staphb/kraken2 kraken2-build --special silva --db /db
+ 
+    Parameters
+    ----------
+    fastq_paths : list of str
+    db_path : str
+    min_prevalence : float
+    threads : int
+ 
+    Returns
+    -------
+    pd.DataFrame : shape (n_samples, n_genera_filtered + 2)
+        Colonnes : kraken_{genus}, kraken_unclassified, kraken_n_genera
+    """
+    if not check_kraken2():
+        print("⚠️  Docker ou image staphb/kraken2 non trouvée")
+        print("   Installation : docker pull staphb/kraken2")
+        return pd.DataFrame()
+ 
+    from tqdm import tqdm
+    print(f"🔬 Kraken2 (Docker) — {len(fastq_paths)} échantillons")
+ 
+    all_reports = []
+    for fp in tqdm(fastq_paths, desc='Kraken2'):
+        report = run_kraken2_on_fastq(fp, db_path, threads)
+        all_reports.append(report if report else {})
+ 
+    tax_df = pd.DataFrame(all_reports).fillna(0.0)
+ 
+    if tax_df.empty:
+        return tax_df
+ 
+    # Filtrage des genres rares
+    n_samples   = len(tax_df)
+    min_samples = int(n_samples * min_prevalence)
+    genus_cols  = [c for c in tax_df.columns
+                   if c.startswith('kraken_')
+                   and c not in ('kraken_unclassified', 'kraken_n_genera')]
+    prevalent   = [c for c in genus_cols
+                   if (tax_df[c] > 0).sum() >= min_samples]
+    meta_cols   = [c for c in ('kraken_unclassified', 'kraken_n_genera')
+                   if c in tax_df.columns]
+    tax_df = tax_df[prevalent + meta_cols]
+ 
+    print(f"✅ Taxonomie Kraken2 :")
+    print(f"   Genres détectés  : {len(genus_cols)}")
+    print(f"   Genres conservés : {len(prevalent)}  "
+          f"(prévalence ≥ {min_prevalence*100:.0f}%)")
+    print(f"   Features totales : {tax_df.shape[1]}")
+ 
+    return tax_df
+ 

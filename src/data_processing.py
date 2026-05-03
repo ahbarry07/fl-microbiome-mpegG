@@ -388,46 +388,6 @@ def encode_categorical_variables(df: pd.DataFrame,
 
 
 # ============================================
-# SECTION 5 : SPLIT (COMPARAISON UNIQUEMENT)
-# ============================================
-
-# def split_train_val_random(df: pd.DataFrame,
-#                             val_size: float = 0.2,
-#                             random_state: int = 42,
-#                             stratify_col: Optional[str] = 'SampleType') -> Tuple[pd.DataFrame, pd.DataFrame]:
-#     """
-#     Split aléatoire par échantillon, avec stratification optionnelle.
-
-#     ⚠️ Peut introduire du data leakage si des sujets ont plusieurs
-#     types d'échantillons. Utiliser uniquement à des fins comparatives.
-#     Pour le split de production, utiliser split_by_subject() de
-#     feature_engineering.py.
-
-#     Parameters
-#     ----------
-#     df : pd.DataFrame
-#     val_size : float
-#     random_state : int
-#     stratify_col : str ou None
-
-#     Returns
-#     -------
-#     tuple : (train_df, val_df)
-#     """
-#     from sklearn.model_selection import train_test_split
-
-#     stratify = df[stratify_col] if (stratify_col and stratify_col in df.columns) else None
-#     train_df, val_df = train_test_split(
-#         df, test_size=val_size, random_state=random_state, stratify=stratify
-#     )
-
-#     print(f"⚠️  Split ALÉATOIRE (data leakage possible) :")
-#     print(f"   Train : {len(train_df)} échantillons")
-#     print(f"   Val   : {len(val_df)} échantillons")
-#     return train_df, val_df
-
-
-# ============================================
 # SECTION 6 : UTILITAIRES I/O
 # ============================================
 
@@ -490,44 +450,44 @@ def load_processed_data(filename: str,
     return df
 
 
-def check_data_leakage(train_df: pd.DataFrame,
-                        val_df: pd.DataFrame,
-                        id_column: str = 'SubjectID') -> bool:
-    """
-    Vérifie qu'aucun identifiant n'est commun entre train et validation.
+# def check_data_leakage(train_df: pd.DataFrame,
+#                         val_df: pd.DataFrame,
+#                         id_column: str = 'SubjectID') -> bool:
+#     """
+#     Vérifie qu'aucun identifiant n'est commun entre train et validation.
 
-    Parameters
-    ----------
-    train_df : pd.DataFrame
-    val_df   : pd.DataFrame
-    id_column : str
+#     Parameters
+#     ----------
+#     train_df : pd.DataFrame
+#     val_df   : pd.DataFrame
+#     id_column : str
 
-    Returns
-    -------
-    bool : True si pas de leakage, False sinon
-    """
-    overlap = set(train_df[id_column].unique()) & set(val_df[id_column].unique())
-    if overlap:
-        print(f"❌ DATA LEAKAGE : {len(overlap)} {id_column} en commun")
-        print(f"   Exemples : {list(overlap)[:5]}")
-        return False
-    print(f"✅ Pas de data leakage ({id_column})")
-    return True
+#     Returns
+#     -------
+#     bool : True si pas de leakage, False sinon
+#     """
+#     overlap = set(train_df[id_column].unique()) & set(val_df[id_column].unique())
+#     if overlap:
+#         print(f"❌ DATA LEAKAGE : {len(overlap)} {id_column} en commun")
+#         print(f"   Exemples : {list(overlap)[:5]}")
+#         return False
+#     print(f"✅ Pas de data leakage ({id_column})")
+#     return True
 
 
 # ============================================
 # TEST RAPIDE
 # ============================================
 
-if __name__ == "__main__":
-    print("=" * 55)
-    print("TEST — data_processing.py")
-    print("=" * 55)
+# if __name__ == "__main__":
+#     print("=" * 55)
+#     print("TEST — data_processing.py")
+#     print("=" * 55)
 
-    seq = "ATCGATCGATCGATCG"
-    fractions = _nucleotide_fractions(seq)
-    print(f"\n🧪 Test fractions nucléotidiques :")
-    for k, v in fractions.items():
-        print(f"   {k} : {v:.4f}")
+#     seq = "ATCGATCGATCGATCG"
+#     fractions = _nucleotide_fractions(seq)
+#     print(f"\n🧪 Test fractions nucléotidiques :")
+#     for k, v in fractions.items():
+#         print(f"   {k} : {v:.4f}")
 
-    print("\n✅ Module data_processing.py opérationnel")
+#     print("\n✅ Module data_processing.py opérationnel")

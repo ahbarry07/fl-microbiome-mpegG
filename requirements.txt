@@ -40,3 +40,15 @@ ipywidgets
 # === Utils ===
 pyyaml
 python-dotenv
+
+
+# ============================================
+# DÉPENDANCES SYSTÈME (non-pip)
+# ============================================
+# Kraken2 — classification taxonomique des reads 16S
+#   conda : conda install -c bioconda kraken2
+#   binaires : https://github.com/DerrickWood/kraken2/releases
+#   DB Silva  : kraken2-build --special silva --db data/kraken2_silva_db
+#
+# Docker (optionnel, pour décompression MPEG-G via Genie)
+#   image : muefab/genie:latest
