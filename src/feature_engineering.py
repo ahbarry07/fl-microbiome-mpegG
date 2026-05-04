@@ -810,7 +810,7 @@ def build_taxonomic_features(fastq_paths: List[str],
     tax_df = pd.DataFrame(all_reports).fillna(0.0)
  
     if tax_df.empty:
-        return tax_df
+        return np.log1p(tax_df)
  
     # Filtrage des genres rares
     n_samples   = len(tax_df)
@@ -819,7 +819,7 @@ def build_taxonomic_features(fastq_paths: List[str],
                    if c.startswith('kraken_')
                    and c not in ('kraken_unclassified', 'kraken_n_genera')]
     prevalent   = [c for c in genus_cols
-                   if (tax_df[c] > 0).sum() >= min_samples]
+                   if (tax_df[c] > 0.001).sum() >= min_samples]
     meta_cols   = [c for c in ('kraken_unclassified', 'kraken_n_genera')
                    if c in tax_df.columns]
     tax_df = tax_df[prevalent + meta_cols]
@@ -830,5 +830,5 @@ def build_taxonomic_features(fastq_paths: List[str],
           f"(prévalence ≥ {min_prevalence*100:.0f}%)")
     print(f"   Features totales : {tax_df.shape[1]}")
  
-    return tax_df
+    return np.log1p(tax_df)
  

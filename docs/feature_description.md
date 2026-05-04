@@ -268,7 +268,7 @@ La distribution des longueurs de reads est un proxy du **protocole d'amplificati
 
 ---
 
-## 8. Taxonomie Kraken2 (≤482 features)
+## 8. Taxonomie Kraken2 (≤200 features)
 
 Calculées par `run_kraken2_on_fastq` + `build_taxonomic_features` via Docker (image `staphb/kraken2`),
 base de données Silva 16S (`data/kraken2_silva_db`).
@@ -289,8 +289,8 @@ sont conservés pour éviter la haute dimensionnalité liée aux genres rares.
 
 En pratique sur ce dataset :
 - Genres détectés : ~2 680
-- Genres conservés (prévalence ≥ 5 %) : **480**
-- Features totales Kraken2 : **482** (480 genres + `kraken_unclassified` + `kraken_n_genera`)
+- Genres conservés (prévalence ≥ 5 %) : **101**
+- Features totales Kraken2 : **103** (101 genres + `kraken_unclassified` + `kraken_n_genera`)
 
 ### Justification biologique
 
@@ -324,7 +324,7 @@ Pour chaque fichier FASTQ :
 ```
 
 > **Alignement test/train :** les genres présents dans le train mais absents du test
-> sont remplis à 0 (32 colonnes dans ce dataset). Seul le filtrage de prévalence
+> sont remplis à 0 (11 colonnes dans ce dataset). Seul le filtrage de prévalence
 > du train est appliqué — le test utilise exactement les mêmes colonnes que le train.
 
 *(Wood et al., 2019, Genome Biology — Kraken2 ultrafast metagenomic classification)*
@@ -349,8 +349,8 @@ feature_engineering.py
   build_taxonomic_features()     → kraken_{genus}, kraken_unclassified, kraken_n_genera
         │
         ▼
-data/processed/train_engineered.csv   (2 901 × 587)   ← avant split
-data/processed/val_engineered.csv     (438   × 587)
-data/processed/test_engineered.csv    (1 068 × 584)
-data/processed/feature_cols.csv       (583 feature names)
+data/processed/train_engineered.csv   (2 901 × 208)   ← avant split
+data/processed/val_engineered.csv     (438   × 208)
+data/processed/test_engineered.csv    (1 068 × 205)
+data/processed/feature_cols.csv       (204 feature names)
 ```
