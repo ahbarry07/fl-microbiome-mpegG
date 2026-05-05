@@ -148,33 +148,35 @@ def run_federated(clients,
     global_bst    = None   # None au round 1
 
     print(f"\n{'='*60}")
-    print(f"SIMULATION FÉDÉRÉE — Soft Voting XGBoost")
+    print(f"SIMULATION FÉDÉRÉE — Entraînement Séquentiel + Soft Voting")
     print(f"  Clients    : {len(clients)}")
     print(f"  Rounds     : {n_rounds}")
+    print(f"  Stratégie  : séquentiel (ordre mélangé chaque round)")
     print(f"  Agrégation : Soft Voting pondéré par n_samples")
     print(f"{'='*60}\n")
 
     for round_idx in range(1, n_rounds + 1):
         print(f"── Round {round_idx}/{n_rounds} ──────────────────────────")
 
-        # Étape 1 : entraînement local de chaque client
-        probas, weights = [], []
-        for client in clients:
-            val_proba, n_samples, _ = client.fit(round_idx, global_bst)
-            probas.append(val_proba)
-            weights.append(n_samples)
+        # Ordre aléatoire reproductible — évite qu'un client domine toujours
+        rng   = np.random.default_rng(42 + round_idx)
+        order = rng.permutation(len(clients)).tolist()
 
-        # Étape 2 : soft voting pondéré
+        # Entraînement séquentiel : chaque client enrichit global_bst immédiatement.
+        # Après tous les clients, global_bst a vu TOUTES les données du round.
+        for i in order:
+            clients[i].fit(round_idx, global_bst)
+            global_bst = clients[i].bst
+
+        # Soft voting sur les modèles locaux finaux du round
+        probas  = [c.bst.predict(_val_dmatrix).reshape(-1, _n_classes)
+                   for c in clients if c.bst is not None]
+        weights = [c.n_train for c in clients if c.bst is not None]
         agg_proba = soft_voting(probas, weights)
 
-        # Étape 3 : sélection du meilleur modèle global
-        global_bst = select_best_bst(clients)
-        n_trees    = global_bst.num_boosted_rounds() if global_bst else 0
+        n_trees = global_bst.num_boosted_rounds() if global_bst else 0
+        result  = evaluate_global(agg_proba, round_idx, n_trees)
 
-        # Étape 4 : évaluation
-        result = evaluate_global(agg_proba, round_idx, n_trees)
-
-        # Sauvegarder le meilleur round
         if result["log_loss"] < best_log_loss:
             best_log_loss = result["log_loss"]
             best_bst      = global_bst

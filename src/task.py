@@ -13,11 +13,11 @@ Contenu :
 
 STRATÉGIE DE PARTITIONNEMENT
 ------------------------------
-On partitionne par SubjectID.
+On partitionne par SubjectID (pas par SampleType).
 Chaque partition reçoit un sous-ensemble de sujets avec leurs 4 types
 d'échantillons (Mouth, Nasal, Skin, Stool). Cela garantit :
   - Chaque client connaît les 4 classes → peut entraîner un XGBoost valide
-  - Distribution proche de l'IID
+  - Distribution proche de l'IID → convergence vers le modèle centralisé
   - Pas de data leakage : val set construit par split SubjectID (Notebook 3)
 
 NUM_CLIENTS = 5 (compromis entre granularité fédérée et taille de partition)
@@ -50,7 +50,7 @@ XGBOOST_PARAMS: Dict = {
     "seed":               42,
 }
 
-NUM_LOCAL_ROUNDS = 5  # 5 arbres/round → 100 rounds = 500 arbres (idem centralisé)
+NUM_LOCAL_ROUNDS = 1  # séquentiel : 5 clients × 1 arbre × 100 rounds = 500 arbres
 
 
 def load_data(processed_path: Path = PROCESSED_PATH
@@ -87,7 +87,8 @@ def get_client_partition(client_id: int,
     Les clients utilisent train + val pour l'entraînement local.
     Le val set est inclus car dans le contexte fédéré il sert uniquement
     à évaluer le modèle global côté serveur (evaluate_fn dans server_app.py) —
-    les clients n'ont pas besoin de le garder séparé.
+    les clients n'ont pas besoin de le garder séparé. L'évaluation finale
+    honnête se fait sur le test set Zindi, complètement indépendant.
 
     Partitionnement par SubjectID en round-robin :
     Client i reçoit les sujets d'indices [i, i+n, i+2n, ...] depuis
@@ -108,7 +109,6 @@ def get_client_partition(client_id: int,
     train_dmatrix : xgb.DMatrix
     y_local       : np.ndarray labels encodés
     """
-    # Combiner train et val pour l'entraînement local
     full_df  = pd.concat([train_df, val_df], ignore_index=True)
     subjects = sorted(full_df["SubjectID"].unique())
 
@@ -124,7 +124,6 @@ def get_client_partition(client_id: int,
 
 def get_test_dmatrix(test_df: pd.DataFrame, feature_cols: List[str]) -> xgb.DMatrix:
     """Retourne le DMatrix du test set (sans labels)."""
-    
     return xgb.DMatrix(test_df[feature_cols].values)
 
 
