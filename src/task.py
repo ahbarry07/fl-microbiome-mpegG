@@ -40,11 +40,11 @@ XGBOOST_PARAMS: Dict = {
     "objective":          "multi:softprob",
     "num_class":          4,
     "eval_metric":        "mlogloss",
-    "eta":                0.05,   # aligné avec le centralisé (était 0.1)
+    "eta":                0.05,
     "max_depth":          6,
     "subsample":          0.8,
     "colsample_bytree":   0.8,
-    "min_child_weight":   1,      # aligné avec le centralisé (était 3)
+    "min_child_weight":   1,
     "tree_method":        "hist",
     "nthread":            8,
     "seed":               42,
@@ -53,9 +53,7 @@ XGBOOST_PARAMS: Dict = {
 NUM_LOCAL_ROUNDS = 1  # séquentiel : 5 clients × 1 arbre × 100 rounds = 500 arbres
 
 
-def load_data(processed_path: Path = PROCESSED_PATH
-              ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
-                         List[str], LabelEncoder]:
+def load_data(processed_path: Path = PROCESSED_PATH) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], LabelEncoder]:
     """
     Charge train, val et test depuis le dossier processed.
 
@@ -87,8 +85,7 @@ def get_client_partition(client_id: int,
     Les clients utilisent train + val pour l'entraînement local.
     Le val set est inclus car dans le contexte fédéré il sert uniquement
     à évaluer le modèle global côté serveur (evaluate_fn dans server_app.py) —
-    les clients n'ont pas besoin de le garder séparé. L'évaluation finale
-    honnête se fait sur le test set Zindi, complètement indépendant.
+    les clients n'ont pas besoin de le garder séparé.
 
     Partitionnement par SubjectID en round-robin :
     Client i reçoit les sujets d'indices [i, i+n, i+2n, ...] depuis

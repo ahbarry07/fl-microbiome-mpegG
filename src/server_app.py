@@ -2,16 +2,16 @@
 server_app.py
 =============
 
-Agrégation fédérée par soft voting pondéré et évaluation centralisée.
+Agrégation fédérée par entraînement séquentiel + soft voting pondéré.
 
 Contenu :
 - soft_voting()    : agrège les probabilités des clients en un vecteur
                      global pondéré par n_samples de chaque client
-- select_best_bst(): retourne le Booster du client le plus représentatif
-                     (le plus de données) comme modèle global pour le
-                     round suivant
+- select_best_bst(): [NON UTILISÉ] remplacée par la mise à jour inline
+                     dans run_federated (entraînement séquentiel)
 - evaluate_global(): calcule log_loss, accuracy, f1_macro sur le val set
-- run_federated()  : boucle principale de simulation fédérée
+- run_federated()  : boucle principale — entraînement séquentiel par round,
+                     soft voting pour l'évaluation et les prédictions finales
 - MODELS_PATH      : dossier de sauvegarde du meilleur modèle global
 - RESULTS_PATH     : dossier de sauvegarde de l'historique CSV
 """
@@ -71,21 +71,6 @@ def soft_voting(probas: List[np.ndarray],
     return agg
 
 
-def select_best_bst(clients) -> Optional[xgb.Booster]:
-    """
-    Retourne le Booster du client ayant le meilleur val log_loss.
-
-    Choisir le modèle qui généralise le mieux sur le val set (et non
-    simplement le plus gros client) donne un meilleur point de départ
-    pour le round suivant → convergence plus rapide vers le centralisé.
-    """
-    fitted = [(c.last_val_loss, c.bst) for c in clients if c.bst is not None]
-    if not fitted:
-        return None
-    _, best_bst = min(fitted, key=lambda x: x[0])
-    return best_bst
-
-
 def evaluate_global(agg_proba: np.ndarray,
                     server_round: int,
                     n_trees: int) -> Dict:
@@ -124,14 +109,15 @@ def evaluate_global(agg_proba: np.ndarray,
 def run_federated(clients,
                   n_rounds: int = 20) -> Tuple[xgb.Booster, List[Dict]]:
     """
-    Boucle de simulation fédérée avec soft voting pondéré.
+    Boucle de simulation fédérée — entraînement séquentiel + soft voting.
 
     À chaque round :
-    1. Chaque client entraîne son XGBoost local (depuis le meilleur
-       modèle global du round précédent)
-    2. Soft voting pondéré sur les probabilités val → p_global
-    3. Évaluation de p_global sur le val set
-    4. Le meilleur modèle global est sauvegardé
+    1. Ordre des clients mélangé aléatoirement (seed = 42 + round_idx)
+    2. Chaque client entraîne 1 arbre depuis global_bst courant →
+       global_bst est mis à jour immédiatement après chaque client
+    3. Soft voting pondéré sur les modèles locaux finaux → p_global
+    4. Évaluation de p_global sur le val set
+    5. Le meilleur modèle global (log_loss minimal) est sauvegardé
 
     Parameters
     ----------

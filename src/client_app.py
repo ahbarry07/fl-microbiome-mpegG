@@ -4,17 +4,15 @@ client_app.py
 
 Logique client XGBoost pour l'apprentissage fédéré multiclasse.
 
-Agrégation : Soft Voting pondéré par n_samples.
-  Le serveur ne manipule pas les arbres XGBoost — il agrège directement
-  les probabilités prédites sur le val set. Cela évite les problèmes
-  de compatibilité de FedXgbBagging avec multi:softprob / num_class > 2.
+Stratégie : entraînement séquentiel + Soft Voting pondéré par n_samples.
+  À chaque round, les clients enrichissent le modèle global l'un après l'autre
+  (ordre mélangé). Après tous les clients, global_bst a vu TOUTES les données.
+  Les prédictions finales sont agrégées par soft voting pondéré :
 
   p_global(x) = Σ_i (n_i / N) * p_i(x)
 
-  Le modèle global est le modèle du client avec le plus de données
-  (le mieux représentatif), amélioré par les probabilités des autres.
-  En pratique : chaque client entraîne son XGBoost local, envoie ses
-  probabilités sur le val set, le serveur calcule le vote pondéré.
+  En pratique : chaque client reçoit global_bst, entraîne 1 arbre sur ses
+  données locales, met à jour global_bst immédiatement, puis passe au suivant.
 """
 
 import warnings
@@ -124,12 +122,6 @@ class XGBoostClient:
 
         return val_proba, self.n_train, metrics
 
-    def evaluate(self) -> Dict:
-        """Évalue le modèle local courant sur le val set."""
-        if self.bst is None:
-            return {"log_loss": 999.0, "accuracy": 0.0, "f1_macro": 0.0}
-        val_proba = self.bst.predict(self.val_dmatrix).reshape(-1, self.n_classes)
-        return self._compute_metrics(val_proba)
 
     def _compute_metrics(self, proba: np.ndarray) -> Dict:
         pred = proba.argmax(axis=1)
