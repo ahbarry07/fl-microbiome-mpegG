@@ -2,7 +2,7 @@
 data_processing.py
 ==================
 
-Chargement des données, décompression MPEG-G → FASTQ,
+Chargement des données, décompression MPEG-G -> FASTQ,
 extraction des mesures brutes par échantillon, merge et utilitaires I/O.
 """
 

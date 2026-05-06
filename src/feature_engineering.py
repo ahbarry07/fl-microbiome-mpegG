@@ -29,13 +29,13 @@ Conçue pour ProcessPoolExecutor — un appel par fichier, par worker.
 
   Par bloc :
     1. Lecture binaire native (4 lignes FASTQ : @header / seq / + / qual)
-    2. `_encode_sequences`  — ASCII → {A=0, C=1, G=2, T=3, autre=4} via lookup table
-    3. k-mers               — k décalages numpy + bincount → accumulation int64
-    4. dinucléotides        — bincount sur paires valides → accumulation int64
+    2. `_encode_sequences`  — ASCII -> {A=0, C=1, G=2, T=3, autre=4} via lookup table
+    3. k-mers               — k décalages numpy + bincount -> accumulation int64
+    4. dinucléotides        — bincount sur paires valides -> accumulation int64
     5. qualité              — frombuffer - 33, sommes q20/q30 cumulées
 
   Après tous les blocs :
-    normalisation des comptes accumulés → fréquences k-mers et rho(XY)
+    normalisation des comptes accumulés -> fréquences k-mers et rho(XY)
 
 
 PIPELINE TAXONOMIQUE (Section 7 — Kraken2)
@@ -191,7 +191,7 @@ def _all_kmers(k):
 # SECTION 4b : VERSIONS NUMPY (RAPIDES)
 # ============================================================
 
-# Table de correspondance ASCII → indice base (A=0, C=1, G=2, T=3, autre=4)
+# Table de correspondance ASCII -> indice base (A=0, C=1, G=2, T=3, autre=4)
 # uint8 : 4× moins de mémoire que int32 sur le tableau encoded
 _BASE_TABLE = np.full(256, 4, dtype=np.uint8)
 for _char, _val in zip('AaCcGgTt', [0, 0, 1, 1, 2, 2, 3, 3]):
@@ -232,20 +232,20 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
 
     Pipeline par bloc :
       1. Lecture de `chunk_size` reads (binaire natif, sans BioPython)
-      2. `_encode_sequences`  — concaténation + lookup table → uint8
-         → del seqs_chunk     — libère espace avant de traiter les k-mers
+      2. `_encode_sequences`  — concaténation + lookup table -> uint8
+         -> del seqs_chunk     — libère espace avant de traiter les k-mers
       3. bincount k-mers      — accumulation dans kmer_counts (int64, 64 valeurs)
       4. bincount di-nucl.    — accumulation dans mono_accum / di_accum
-         → del encoded        — libère espace avant de traiter les qualités
+         -> del encoded        — libère espace avant de traiter les qualités
       5. qualité              — b''.join + frombuffer - 33, sommes cumulées
-         → del quals_chunk, q_bytes
+         -> del quals_chunk, q_bytes
 
-    Normalisation finale depuis les comptes totaux → fréquences et rho(XY).
+    Normalisation finale depuis les comptes totaux -> fréquences et rho(XY).
 
     Parameters
     ----------
     fastq_path : str ou Path
-    k : int  — longueur des k-mers (défaut 3 → 64 features)
+    k : int  — longueur des k-mers (défaut 3 -> 64 features)
     chunk_size : int  — nombre de reads par bloc (défaut 200 000, ~160 MB/bloc)
 
     Returns
@@ -263,7 +263,7 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
     n_reads      = 0
 
     # Précalculé une seule fois pour tous les blocs (évite de recréer à chaque itération)
-    # k=3 → max_idx=84 → uint8 (1 octet/position) ; k=4 → uint16 ; k≥5 → int32
+    # k=3 -> max_idx=84 -> uint8 (1 octet/position) ; k=4 -> uint16 ; k≥5 -> int32
     max_idx   = sum(4 * 4 ** (k - 1 - i) for i in range(k))
     idx_dtype = np.uint8 if max_idx <= 255 else np.uint16 if max_idx <= 65535 else np.int32
     powers    = (4 ** np.arange(k - 1, -1, -1)).astype(idx_dtype)  # [4^(k-1), ..., 1]
@@ -283,12 +283,12 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
                     fh.readline()                                      # ligne "+" (ignorée)
                     quals_chunk.append(fh.readline().rstrip(b'\n'))  # qualités Phred+33
 
-                if not seqs_chunk:          # bloc vide → tout le fichier a été lu
+                if not seqs_chunk:          # bloc vide -> tout le fichier a été lu
                     break
                 n_reads += len(seqs_chunk)
 
                 # ── K-mers + dinucléotides ─────────────────────────────────────
-                # Encode le bloc : liste de bytes → tableau uint8 {0,1,2,3,4}
+                # Encode le bloc : liste de bytes -> tableau uint8 {0,1,2,3,4}
                 # Les 'N' entre reads empêchent les k-mers inter-reads
                 encoded = _encode_sequences(seqs_chunk)
                 del seqs_chunk   # libère espace memoire avant de traiter les k-mers et qualités
@@ -322,7 +322,7 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
                     # Paires : les deux bases adjacentes doivent être valides
                     valid_pairs = valid_bases[:-1] & valid_bases[1:]
 
-                    # Indice paire : base1 * 4 + base2 → [0, 15]
+                    # Indice paire : base1 * 4 + base2 -> [0, 15]
                     di_idx = (encoded[:-1][valid_pairs].astype(np.uint8) * 4 + encoded[1:][valid_pairs].astype(np.uint8))
                     di_accum += np.bincount(di_idx, minlength=16).astype(np.int64)
 
@@ -347,14 +347,14 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
 
     # ── Normalisation finale ───────────
 
-    # K-mers : comptes bruts → fréquences relatives
+    # K-mers : comptes bruts -> fréquences relatives
     kmer_total = kmer_counts.sum()
     kmer_f = ({f'kmer_{km}': int(kmer_counts[i]) / kmer_total
                for i, km in enumerate(all_kmers)}
               if kmer_total > 0 else
               {f'kmer_{km}': 0.0 for km in all_kmers})
 
-    # Dinucléotides : comptes bruts → rho(XY) = f(XY) / (f(X) · f(Y))
+    # Dinucléotides : comptes bruts -> rho(XY) = f(XY) / (f(X) · f(Y))
     total_mono = mono_accum.sum()
     total_di   = di_accum.sum()
     if total_mono > 0 and total_di > 0:
@@ -664,8 +664,8 @@ def run_kraken2_on_fastq(fastq_path: str,
     Cela évite tout problème de montage de dossier temporaire dans Docker.
  
     Montages Docker :
-    - fastq_dir → /data/fastq:ro   (lecture seule)
-    - db_path   → /data/db:ro      (lecture seule)
+    - fastq_dir -> /data/fastq:ro   (lecture seule)
+    - db_path   -> /data/db:ro      (lecture seule)
     Le rapport est écrit via /data/fastq/ (même volume, accès en écriture
     sur le host même si le flag Docker est :ro car le flag s'applique au
     container, pas à l'hôte).

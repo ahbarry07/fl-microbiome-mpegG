@@ -7,8 +7,6 @@ Agrégation fédérée par entraînement séquentiel + soft voting pondéré.
 Contenu :
 - soft_voting()    : agrège les probabilités des clients en un vecteur
                      global pondéré par n_samples de chaque client
-- select_best_bst(): [NON UTILISÉ] remplacée par la mise à jour inline
-                     dans run_federated (entraînement séquentiel)
 - evaluate_global(): calcule log_loss, accuracy, f1_macro sur le val set
 - run_federated()  : boucle principale — entraînement séquentiel par round,
                      soft voting pour l'évaluation et les prédictions finales
@@ -20,14 +18,16 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import log_loss, accuracy_score, f1_score
 
-from task import load_data, PROCESSED_PATH
+from task import load_data
+from client_app import XGBoostClient
+
 
 RESULTS_PATH = Path(__file__).resolve().parent.parent / "results" / "metrics"
 MODELS_PATH  = Path(__file__).resolve().parent.parent / "models"  / "federated"
@@ -44,16 +44,15 @@ _n_classes   = len(_le.classes_)
 history: List[Dict] = []
 
 
-def soft_voting(probas: List[np.ndarray],
-                weights: List[int]) -> np.ndarray:
+def soft_voting(probas: List[np.ndarray], weights: List[int]) -> np.ndarray:
     """
     Agrège les probabilités des clients par soft voting pondéré.
 
-    p_global(x) = Σ_i (n_i / N) * p_i(x)
+    p_global(x) = Σ_i (n_i / N) * p_i(x):
+     où n_i est la taille du dataset local du client i, N = Σ_i n_i, et p_i(x) les probabilités prédites par le modèle local du client i.
 
-    Chaque client contribue proportionnellement à la taille de son
-    dataset local. Cela donne plus de poids aux clients qui ont plus
-    de données → convergence vers le modèle centralisé.
+    Chaque client contribue proportionnellement à la taille de son dataset local.
+    Cela donne plus de poids aux clients qui ont plus de données.
 
     Parameters
     ----------
@@ -71,9 +70,7 @@ def soft_voting(probas: List[np.ndarray],
     return agg
 
 
-def evaluate_global(agg_proba: np.ndarray,
-                    server_round: int,
-                    n_trees: int) -> Dict:
+def evaluate_global(agg_proba: np.ndarray, server_round: int, n_trees: int) -> Dict:
     """
     Évalue les probabilités agrégées sur le val set et sauvegarde.
 
@@ -88,34 +85,33 @@ def evaluate_global(agg_proba: np.ndarray,
     dict : round, log_loss, accuracy, f1_macro, n_trees
     """
     y_pred = agg_proba.argmax(axis=1)
-    ll     = float(log_loss(_y_val, agg_proba,
-                            labels=list(range(_n_classes))))
+    ll     = float(log_loss(_y_val, agg_proba, labels=list(range(_n_classes))))
     acc    = float(accuracy_score(_y_val, y_pred))
     f1     = float(f1_score(_y_val, y_pred, average="macro", zero_division=0))
 
-    result = {"round": server_round, "log_loss": ll,
-              "accuracy": acc, "f1_macro": f1, "n_trees": n_trees}
+    result = {
+        "round": server_round, 
+        "log_loss": ll, 
+        "accuracy": acc, 
+        "f1_macro": f1, 
+        "n_trees": n_trees
+    }
     history.append(result)
 
-    pd.DataFrame(history).to_csv(
-        RESULTS_PATH / "federated_metrics.csv", index=False
-    )
-    print(f"  → Global | LogLoss={ll:.4f} | Acc={acc:.4f} "
-          f"| F1={f1:.4f} | Arbres={n_trees}")
+    pd.DataFrame(history).to_csv(RESULTS_PATH / "federated_metrics.csv", index=False)
+    print(f"  -> Global | LogLoss={ll:.4f} | Acc={acc:.4f} | F1={f1:.4f} | Arbres={n_trees}")
 
     return result
 
 
-def run_federated(clients,
-                  n_rounds: int = 20) -> Tuple[xgb.Booster, List[Dict]]:
+def run_federated(clients: List[XGBoostClient], n_rounds: int = 20) -> Tuple[xgb.Booster, List[Dict]]:
     """
     Boucle de simulation fédérée — entraînement séquentiel + soft voting.
 
     À chaque round :
     1. Ordre des clients mélangé aléatoirement (seed = 42 + round_idx)
-    2. Chaque client entraîne 1 arbre depuis global_bst courant →
-       global_bst est mis à jour immédiatement après chaque client
-    3. Soft voting pondéré sur les modèles locaux finaux → p_global
+    2. Chaque client entraîne 1 arbre depuis global_bst courant -> global_bst est mis à jour immédiatement après chaque client
+    3. Soft voting pondéré sur les modèles locaux finaux -> p_global
     4. Évaluation de p_global sur le val set
     5. Le meilleur modèle global (log_loss minimal) est sauvegardé
 
@@ -155,19 +151,18 @@ def run_federated(clients,
             global_bst = clients[i].bst
 
         # Soft voting sur les modèles locaux finaux du round
-        probas  = [c.bst.predict(_val_dmatrix).reshape(-1, _n_classes)
-                   for c in clients if c.bst is not None]
-        weights = [c.n_train for c in clients if c.bst is not None]
+        probas  = [client.bst.predict(_val_dmatrix).reshape(-1, _n_classes) for client in clients if client.bst is not None]
+        weights = [client.n_train for client in clients if client.bst is not None]
         agg_proba = soft_voting(probas, weights)
 
-        n_trees = global_bst.num_boosted_rounds() if global_bst else 0
+        n_trees = global_bst.num_boosted_rounds() if global_bst else 0 # nombre d'arbres du modèle global après ce round
         result  = evaluate_global(agg_proba, round_idx, n_trees)
 
         if result["log_loss"] < best_log_loss:
             best_log_loss = result["log_loss"]
             best_bst      = global_bst
             if best_bst:
-                best_bst.save_model(str(MODELS_PATH / "best_global_model.ubj"))
+                best_bst.save_model(str(MODELS_PATH / "best_global_model.cubj"))
             print(f"  🏆 Nouveau meilleur LogLoss : {best_log_loss:.4f}")
 
     print(f"\n{'='*60}")

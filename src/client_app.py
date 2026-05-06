@@ -9,7 +9,8 @@ Stratégie : entraînement séquentiel + Soft Voting pondéré par n_samples.
   (ordre mélangé). Après tous les clients, global_bst a vu TOUTES les données.
   Les prédictions finales sont agrégées par soft voting pondéré :
 
-  p_global(x) = Σ_i (n_i / N) * p_i(x)
+  p_global(x) = Σ_i (n_i / N) * p_i(x):
+    où n_i est la taille du dataset local du client i, N = Σ_i n_i, et p_i(x) les probabilités prédites par le modèle local du client i.
 
   En pratique : chaque client reçoit global_bst, entraîne 1 arbre sur ses
   données locales, met à jour global_bst immédiatement, puis passe au suivant.
@@ -19,18 +20,14 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from typing import Dict, List, Optional, Tuple
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-import joblib
 from sklearn.metrics import log_loss, accuracy_score, f1_score
 
 from task import (
-    load_data,
     get_client_partition,
-    evaluate_global_model,
     XGBOOST_PARAMS,
     NUM_LOCAL_ROUNDS,
     NUM_CLIENTS,
@@ -42,7 +39,7 @@ class XGBoostClient:
     Client fédéré XGBoost — entraînement local multi:softprob.
 
     Chaque client reçoit une partition de sujets (round-robin SubjectID)
-    avec les 4 types d'échantillons → les 4 classes présentes.
+    avec les 4 types d'échantillons -> les 4 classes présentes.
 
     À chaque round :
     - fit()      : entraîne un XGBoost local, retourne ses probabilités
@@ -126,11 +123,9 @@ class XGBoostClient:
     def _compute_metrics(self, proba: np.ndarray) -> Dict:
         pred = proba.argmax(axis=1)
         return {
-            "log_loss": float(log_loss(self.y_val, proba,
-                                       labels=list(range(self.n_classes)))),
+            "log_loss": float(log_loss(self.y_val, proba, labels=list(range(self.n_classes)))),
             "accuracy": float(accuracy_score(self.y_val, pred)),
-            "f1_macro": float(f1_score(self.y_val, pred,
-                                       average="macro", zero_division=0)),
+            "f1_macro": float(f1_score(self.y_val, pred, average="macro", zero_division=0)),
         }
 
 
@@ -158,22 +153,22 @@ def create_clients(train_df: pd.DataFrame,
 
     clients = []
     print(f"Création des clients ({n_clients} — train+val, round-robin SubjectID) :")
-    for i in range(n_clients):
+    for client_id in range(n_clients):
         train_dmat, y_loc = get_client_partition(
-            i, train_df, val_df, feature_cols, le, n_clients
+            client_id, train_df, val_df, feature_cols, le, n_clients
         )
         n_classes_local = len(np.unique(y_loc))
-        client_subjects = [s for j, s in enumerate(subjects) if j % n_clients == i]
+        client_subjects = [s for j, s in enumerate(subjects) if j % n_clients == client_id]
 
         clients.append(XGBoostClient(
-            client_id        = i,
+            client_id        = client_id,
             train_dmatrix    = train_dmat,
             val_dmatrix      = val_dmat,
             y_val            = y_val,
             params           = params,
             num_local_rounds = num_local_rounds,
         ))
-        print(f"  Client {i} : {len(client_subjects):>2} sujets "
+        print(f"  Client {client_id} : {len(client_subjects):>2} sujets "
               f"| {train_dmat.num_row():>4} échantillons "
               f"| {n_classes_local} classes")
 

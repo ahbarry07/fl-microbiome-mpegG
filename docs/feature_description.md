@@ -107,7 +107,7 @@ Plage : [0, 2].
 
 ## 4. K-mers (k=3) — 64 features
 
-Calculés par `extract_fastq_features` → accumulation par blocs via `np.bincount`.
+Calculés par `extract_fastq_features` -> accumulation par blocs via `np.bincount`.
 
 ### Définition
 
@@ -155,7 +155,7 @@ informative pour discriminer les sites corporels (bouche, peau, nasopharynx, int
 
 ## 5. Dinucléotides relatifs rho (16 features)
 
-Calculés par `extract_fastq_features` → accumulation mono/di-nucleotide par blocs.
+Calculés par `extract_fastq_features` -> accumulation mono/di-nucleotide par blocs.
 
 ### Définition
 
@@ -189,7 +189,7 @@ et discriminants entre sites.
 *(Karlin & Burge, 1995, Trends Genet ; Deschavanne et al., 1999, Mol Biol Evol)*
 
 > **Exemple caractéristique :** `di_CG` (dinucléotide CpG) est systématiquement sous-représenté
-> (rho < 1) dans les génomes bactériens en raison de la méthylation et de la mutation C→T.
+> (rho < 1) dans les génomes bactériens en raison de la méthylation et de la mutation C->T.
 
 ---
 
@@ -261,8 +261,8 @@ le prélèvement.
 ### Distribution des longueurs (`read_len_*`)
 
 La distribution des longueurs de reads est un proxy du **protocole d'amplification** utilisé :
-- Région V3-V4 (~450 bp) → reads plus longs avec peu de variation
-- Région V1-V3 (~300 bp) → reads plus courts
+- Région V3-V4 (~450 bp) -> reads plus longs avec peu de variation
+- Région V1-V3 (~300 bp) -> reads plus courts
 
 `read_len_std` capture l'hétérogénéité du protocole au sein d'un même échantillon.
 
@@ -315,11 +315,11 @@ Pour chaque fichier FASTQ :
   │
   ▼
   Parser le rapport TSV (colonnes : %reads, n_clade, n_direct, rank, taxid, name)
-    - Lignes rank='G' → kraken_{genus} = pct/100
-    - Ligne  rank='U' → kraken_unclassified = pct/100
+    - Lignes rank='G' -> kraken_{genus} = pct/100
+    - Ligne  rank='U' -> kraken_unclassified = pct/100
   │
   ▼
-  Matrice (n_samples × n_genera) → fillna(0.0)
+  Matrice (n_samples × n_genera) -> fillna(0.0)
   Filtrage : genres avec (count > 0) dans ≥ 5% des échantillons
 ```
 
@@ -338,15 +338,15 @@ data/raw/TrainFiles/*.fastq
         │
         ▼
 data_processing.py
-  extract_all_fastq_features()   → pct_A/T/C/G/GC, avg_quality, num_reads, avg_read_length
+  extract_all_fastq_features()   -> pct_A/T/C/G/GC, avg_quality, num_reads, avg_read_length
         │
         ▼
 feature_engineering.py
-  build_features()               → gc_skew, at_skew, purine_pyrimidine_ratio, nucleotide_entropy
-  extract_fastq_features()       → kmer_*, di_*, pct_bases_q20, pct_bases_q30
+  build_features()               -> gc_skew, at_skew, purine_pyrimidine_ratio, nucleotide_entropy
+  extract_fastq_features()       -> kmer_*, di_*, pct_bases_q20, pct_bases_q30
   compute_sequence_complexity_features()
-                                 → lz_complexity, pct_ambiguous, read_len_*
-  build_taxonomic_features()     → kraken_{genus}, kraken_unclassified, kraken_n_genera
+                                 -> lz_complexity, pct_ambiguous, read_len_*
+  build_taxonomic_features()     -> kraken_{genus}, kraken_unclassified, kraken_n_genera
         │
         ▼
 data/processed/train_engineered.csv   (2 901 × 208)   ← avant split

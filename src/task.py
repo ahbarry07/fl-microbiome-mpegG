@@ -13,14 +13,14 @@ Contenu :
 
 STRATÉGIE DE PARTITIONNEMENT
 ------------------------------
-On partitionne par SubjectID (pas par SampleType).
+On partitionne par SubjectID.
 Chaque partition reçoit un sous-ensemble de sujets avec leurs 4 types
 d'échantillons (Mouth, Nasal, Skin, Stool). Cela garantit :
-  - Chaque client connaît les 4 classes → peut entraîner un XGBoost valide
-  - Distribution proche de l'IID → convergence vers le modèle centralisé
-  - Pas de data leakage : val set construit par split SubjectID (Notebook 3)
+  - Chaque client connaît les 4 classes -> peut entraîner un XGBoost valide
+  - Distribution proche de l'IID -> convergence vers le modèle centralisé
 
-NUM_CLIENTS = 5 (compromis entre granularité fédérée et taille de partition)
+NUM_CLIENTS = 5 est un bon compromis pour :
+  - suffisamment de clients pour simuler un contexte fédéré réaliste
 """
 
 from pathlib import Path
@@ -37,15 +37,15 @@ PROCESSED_PATH = Path(__file__).resolve().parent.parent / "data" / "processed"
 NUM_CLIENTS = 5   # nombre de clients fédérés
 
 XGBOOST_PARAMS: Dict = {
-    "objective":          "multi:softprob",
+    "objective":          "multi:softprob", 
     "num_class":          4,
     "eval_metric":        "mlogloss",
-    "eta":                0.05,
-    "max_depth":          6,
-    "subsample":          0.8,
-    "colsample_bytree":   0.8,
-    "min_child_weight":   1,
-    "tree_method":        "hist",
+    "eta":                0.05, # alias learning_rate
+    "max_depth":          6, # profondeur maximale des arbres
+    "subsample":          0.8, # échantillonnage des données pour chaque arbre
+    "colsample_bytree":   0.8, # échantillonnage des caractéristiques pour chaque arbre
+    "min_child_weight":   1, # poids minimum d'une feuille pour éviter le surapprentissage
+    "tree_method":        "hist", 
     "nthread":            8,
     "seed":               42,
 }
@@ -83,9 +83,6 @@ def get_client_partition(client_id: int,
     Retourne la partition DMatrix du client `client_id`.
 
     Les clients utilisent train + val pour l'entraînement local.
-    Le val set est inclus car dans le contexte fédéré il sert uniquement
-    à évaluer le modèle global côté serveur (evaluate_fn dans server_app.py) —
-    les clients n'ont pas besoin de le garder séparé.
 
     Partitionnement par SubjectID en round-robin :
     Client i reçoit les sujets d'indices [i, i+n, i+2n, ...] depuis
@@ -112,7 +109,7 @@ def get_client_partition(client_id: int,
     # Round-robin : client i reçoit les sujets d'indices [i, i+n, i+2n, ...]
     client_subjects = [s for j, s in enumerate(subjects) if j % n_clients == client_id]
 
-    local = full_df[full_df["SubjectID"].isin(client_subjects)]
+    local = full_df[full_df["SubjectID"].isin(client_subjects)] # partition locale du client
     X_loc = local[feature_cols].values
     y_loc = le.transform(local["SampleType"].values)
 
@@ -121,6 +118,7 @@ def get_client_partition(client_id: int,
 
 def get_test_dmatrix(test_df: pd.DataFrame, feature_cols: List[str]) -> xgb.DMatrix:
     """Retourne le DMatrix du test set (sans labels)."""
+
     return xgb.DMatrix(test_df[feature_cols].values)
 
 
@@ -136,7 +134,7 @@ def evaluate_global_model(bst: xgb.Booster,
     dict : log_loss, accuracy, f1_macro
     """
     proba  = bst.predict(val_dmatrix).reshape(-1, n_classes)
-    y_pred = proba.argmax(axis=1)
+    y_pred = proba.argmax(axis=1) # prédiction de la classe la plus probable
 
     return {
         "log_loss": float(log_loss(y_val, proba, labels=list(range(n_classes)))),

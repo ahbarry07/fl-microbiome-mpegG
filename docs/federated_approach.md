@@ -34,8 +34,8 @@ Il y a **66 sujets au total** (54 train + 12 validation), tous utilisés pour
 l'entraînement local des clients. Chaque sujet a fourni des échantillons des 4 sites corporels.
 On distribue les sujets entre les 5 clients selon un principe de **round-robin** :
 
-- Client 0 → sujets d'indices 0, 5, 10, 15, ... (14 sujets)
-- Client 1 → sujets d'indices 1, 6, 11, 16, ... (13 sujets)
+- Client 0 -> sujets d'indices 0, 5, 10, 15, ... (14 sujets)
+- Client 1 -> sujets d'indices 1, 6, 11, 16, ... (13 sujets)
 - etc.
 
 Ce découpage garantit que **chaque client a des échantillons des 4 classes** (Bouche, Nez,
@@ -97,12 +97,12 @@ nettement inférieure au centralisé.
 ```
 Round k (ordre mélangé : ex. [Client 3, Client 0, Client 4, Client 1, Client 2]) :
 
-  → Client 3 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 0 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 4 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 1 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 2 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Fin du round : le modèle global a vu TOUTES les données ce round
+  -> Client 3 entraîne 1 arbre sur ses données -> modèle global mis à jour
+  -> Client 0 entraîne 1 arbre sur ses données -> modèle global mis à jour
+  -> Client 4 entraîne 1 arbre sur ses données -> modèle global mis à jour
+  -> Client 1 entraîne 1 arbre sur ses données -> modèle global mis à jour
+  -> Client 2 entraîne 1 arbre sur ses données -> modèle global mis à jour
+  -> Fin du round : le modèle global a vu TOUTES les données ce round
 ```
 
 L'ordre est **mélangé aléatoirement à chaque round** (mais de façon reproductible via une
@@ -148,8 +148,8 @@ des probabilités :
 ```
 p_calibrée(x) = softmax( log(p(x)) / T )
 
-  - T < 1 → probabilités plus tranchées (le modèle est plus affirmatif)
-  - T > 1 → probabilités plus douces (le modèle est plus prudent)
+  - T < 1 -> probabilités plus tranchées (le modèle est plus affirmatif)
+  - T > 1 -> probabilités plus douces (le modèle est plus prudent)
 ```
 
 T est optimisé automatiquement sur le jeu de validation pour minimiser le log loss,
@@ -185,7 +185,7 @@ Données brutes (MPEG-G .mgb)
 Extraction de features (Kraken2, k-mers, stats qualité)
         │
         ▼
-Partitionnement round-robin par SubjectID → 5 clients
+Partitionnement round-robin par SubjectID -> 5 clients
         │
         ▼
 ┌─────────────────────────────────────────────┐
@@ -194,8 +194,8 @@ Partitionnement round-robin par SubjectID → 5 clients
 │  Round k :                                  │
 │    ordre mélangé [c_i, c_j, c_k, c_l, c_m] │
 │    Pour chaque client (séquentiel) :        │
-│      xgb.train(global_bst) → global_bst    │
-│    Soft voting → p_global                   │
+│      xgb.train(global_bst) -> global_bst    │
+│    Soft voting -> p_global                   │
 │    Évaluation log_loss / accuracy / F1      │
 └─────────────────────────────────────────────┘
         │
@@ -203,7 +203,7 @@ Partitionnement round-robin par SubjectID → 5 clients
 Calibration en température (T optimisé sur val)
         │
         ▼
-Prédictions test → soumission Zindi (CSV)
+Prédictions test -> soumission Zindi (CSV)
 ```
 
 ---
