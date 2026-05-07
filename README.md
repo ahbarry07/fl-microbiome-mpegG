@@ -1,6 +1,5 @@
-# fl-microbiome-mpegG
 
-**Federated Learning for Microbiome Body-Site Classification from MPEG-G Data**
+# **Federated Learning for Microbiome Body-Site Classification from MPEG-G Data**
 
 > MPEG-G Microbiome Classification Challenge — Zindi Africa  
 > Sequential XGBoost Federated Learning with Soft Voting Aggregation via Flower
