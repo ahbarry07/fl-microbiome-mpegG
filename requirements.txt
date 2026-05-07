@@ -15,7 +15,7 @@ lightgbm
 imbalanced-learn
 # === Federated Learning ===
 flwr  # Flower framework
-ray # pour le backend de Flower
+# ray # pour le backend de Flower
 flwr[simulation]  # pour les outils de simulation de Flower
 
 # === Visualization ===

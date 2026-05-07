@@ -19,8 +19,8 @@ Les features sont regroupées en 8 familles.
 | Dinucléotides relatifs rho | di_AA … di_TT | 16 |
 | Qualité Phred différenciée | pct_bases_q20, pct_bases_q30 | 2 |
 | Complexité séquentielle | lz_complexity, pct_ambiguous, read_len_* | 7 |
-| Taxonomie Kraken2 | kraken_{genus}, kraken_unclassified, kraken_n_genera | ≤482 |
-| **TOTAL** | | **~583** |
+| Taxonomie Kraken2 | kraken_{genus}, kraken_unclassified, kraken_n_genera | 103 |
+| **TOTAL** | | **204** |
 
 ---
 
