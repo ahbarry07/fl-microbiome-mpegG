@@ -30,27 +30,26 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import log_loss, accuracy_score, f1_score
 
 PROCESSED_PATH = Path(__file__).resolve().parent.parent / "data" / "processed"
 
 NUM_CLIENTS = 5   # nombre de clients fédérés
 
 XGBOOST_PARAMS: Dict = {
-    "objective":          "multi:softprob", 
-    "num_class":          4,
-    "eval_metric":        "mlogloss",
-    "eta":                0.05, # alias learning_rate
-    "max_depth":          6, # profondeur maximale des arbres
-    "subsample":          0.8, # échantillonnage des données pour chaque arbre
-    "colsample_bytree":   0.8, # échantillonnage des caractéristiques pour chaque arbre
-    "min_child_weight":   1, # poids minimum d'une feuille pour éviter le surapprentissage
-    "tree_method":        "hist", 
-    "nthread":            8,
-    "seed":               42,
+    "objective":        "multi:softprob",
+    "num_class":        4,
+    "eval_metric":      "mlogloss",
+    "eta":              0.05,
+    "max_depth":        6,
+    "subsample":        0.8,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 1,
+    "tree_method":      "hist",
+    "nthread":          8,
+    "seed":             42,
 }
 
-NUM_LOCAL_ROUNDS = 1  # séquentiel : 5 clients × 1 arbre × 100 rounds = 500 arbres
+NUM_LOCAL_ROUNDS = 1  # séquentiel : 5 clients × 1 arbre × N_SEMANTIC_ROUNDS
 
 
 def load_data(processed_path: Path = PROCESSED_PATH) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], LabelEncoder]:
@@ -122,22 +121,21 @@ def get_test_dmatrix(test_df: pd.DataFrame, feature_cols: List[str]) -> xgb.DMat
     return xgb.DMatrix(test_df[feature_cols].values)
 
 
-def evaluate_global_model(bst: xgb.Booster,
-                           val_dmatrix: xgb.DMatrix,
-                           y_val: np.ndarray,
-                           n_classes: int = 4) -> Dict[str, float]:
-    """
-    Évalue le modèle global sur le val set.
+def serialize_model(bst: xgb.Booster) -> bytes:
+    """Sérialise un Booster XGBoost en bytes (format JSON — UTF-8 valide).
 
-    Returns
-    -------
-    dict : log_loss, accuracy, f1_macro
+    UBJ est exclu : XGBoost 3.x détecte mal le format en mémoire (UBJ et JSON
+    commencent tous deux par `{`) et lève un UnicodeDecodeError sur les bytes
+    binaires intégrés dans le message d'erreur C++.
+    JSON est ~3× plus grand mais garanti décodable et auto-détectable.
     """
-    proba  = bst.predict(val_dmatrix).reshape(-1, n_classes)
-    y_pred = proba.argmax(axis=1) # prédiction de la classe la plus probable
+    return bst.save_raw("json")
 
-    return {
-        "log_loss": float(log_loss(y_val, proba, labels=list(range(n_classes)))),
-        "accuracy": float(accuracy_score(y_val, y_pred)),
-        "f1_macro": float(f1_score(y_val, y_pred, average="macro", zero_division=0)),
-    }
+
+def deserialize_model(data: bytes) -> xgb.Booster:
+    """Désérialise un Booster XGBoost depuis des bytes JSON."""
+    bst = xgb.Booster()
+    bst.load_model(bytearray(data))
+    return bst
+
+
