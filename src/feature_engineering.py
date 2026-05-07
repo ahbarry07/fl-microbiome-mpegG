@@ -75,9 +75,7 @@ warnings.filterwarnings('ignore')
 # SECTION 1 : FEATURES DÉRIVÉES
 # ============================================================
 
-def compute_gc_skew(df: pd.DataFrame,
-                    pct_g_col: str = 'pct_G',
-                    pct_c_col: str = 'pct_C') -> pd.Series:
+def compute_gc_skew(df: pd.DataFrame, pct_g_col: str = 'pct_G', pct_c_col: str = 'pct_C') -> pd.Series:
     """
     GC-skew = (G - C) / (G + C).
 
@@ -99,9 +97,7 @@ def compute_gc_skew(df: pd.DataFrame,
     return ((df[pct_g_col] - df[pct_c_col]) / gc_sum).rename('gc_skew')
 
 
-def compute_at_skew(df: pd.DataFrame,
-                    pct_a_col: str = 'pct_A',
-                    pct_t_col: str = 'pct_T') -> pd.Series:
+def compute_at_skew(df: pd.DataFrame, pct_a_col: str = 'pct_A', pct_t_col: str = 'pct_T') -> pd.Series:
     """
     AT-skew = (A - T) / (A + T).
 
@@ -156,12 +152,19 @@ def compute_nucleotide_entropy(df: pd.DataFrame,
                                 pct_c_col: str = 'pct_C',
                                 pct_g_col: str = 'pct_G') -> pd.Series:
     """
-    Entropie de Shannon sur la composition nucléotidique (base 2).
+    Entropie de Shannon sur la composition nucléotidique.
 
     H = -Σ p_i * log2(p_i), avec p_i = fraction de chaque nucléotide.
-
-    Valeur maximale : 2 bits (distribution uniforme 25/25/25/25).
-    Une entropie faible indique un fort biais de composition.
+        Mesure la complexité séquentielle : une entropie élevée indique
+        une composition équilibrée, tandis qu'une entropie faible indique
+        un fort biais de composition. L'entropie est maximale (2 bits) lorsque
+        les quatre bases sont présentes à parts égales (25% chacune).
+        (Karlin & Burge, 1995, Trends Genet ; Deschavanne et al., 1999, Mol Biol Evol)
+    
+        Note : les fractions sont clipées à une valeur minimale pour éviter
+        log(0) en cas de nucléotide absent. Une fraction nulle est traitée
+        comme une contribution nulle à l'entropie, ce qui est cohérent avec
+        la définition mathématique de l'entropie de Shannon.
 
     Parameters
     ----------

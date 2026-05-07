@@ -291,47 +291,13 @@ def merge_with_metadata(fastq_df: pd.DataFrame,
     pd.DataFrame fusionné
     """
     merged = train_df.merge(fastq_df, on='filename', how='inner')
-    print(f"✅ Merge Train × FASTQ : {merged.shape}")
+    print(f"✅ Merge Train x FASTQ : {merged.shape}")
 
     if subjects_df is not None:
         merged = merged.merge(subjects_df, on='SubjectID', how='left')
-        print(f"✅ Merge × Subjects   : {merged.shape}")
+        print(f"✅ Merge x Subjects   : {merged.shape}")
 
     return merged
-
-
-def encode_categorical_variables(df: pd.DataFrame,
-                                  categorical_cols: Optional[List[str]] = None) -> pd.DataFrame:
-    """
-    Encode les variables catégorielles (Gender, Ethnicity, etc.) par label encoding.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-    categorical_cols : list, optionnel
-        Colonnes à encoder (None = auto-détection, hors colonnes ID)
-
-    Returns
-    -------
-    pd.DataFrame
-    """
-    df_encoded = df.copy()
-
-    if categorical_cols is None:
-        # Exclure les colonnes ID et filename de l'encodage
-        exclude = {'filename', 'SubjectID', 'SampleID', 'SampleType'}
-        categorical_cols = [
-            col for col in df_encoded.select_dtypes(include=['object']).columns
-            if col not in exclude
-        ]
-
-    for col in categorical_cols:
-        if col in df_encoded.columns:
-            df_encoded[col] = pd.Categorical(df_encoded[col]).codes
-            print(f"   ✓ {col} encodé")
-
-    print(f"✅ {len(categorical_cols)} colonnes encodées")
-    return df_encoded
 
 
 # ============================================
