@@ -194,7 +194,7 @@ class SequentialXGBoostStrategy(Strategy):
 
     def configure_evaluate(
         self,
-        server_round: int,   # noqa: ARG002
+        server_round: int,   # noqa: ARG002: pas d'évaluation client à configurer
         parameters: Parameters,  # noqa: ARG002
         client_manager: ClientManager,  # noqa: ARG002
     ) -> List[Tuple[ClientProxy, EvaluateIns]]:
@@ -202,7 +202,7 @@ class SequentialXGBoostStrategy(Strategy):
 
     def aggregate_evaluate(
         self,
-        server_round: int,   # noqa: ARG002
+        server_round: int,   # noqa: ARG002: pas d'évaluation client à agréger
         results: List[Tuple[ClientProxy, EvaluateRes]],  # noqa: ARG002
         failures: List[Union[Tuple[ClientProxy, EvaluateRes], BaseException]],  # noqa: ARG002
     ) -> Tuple[Optional[float], Dict[str, Scalar]]:
@@ -210,7 +210,7 @@ class SequentialXGBoostStrategy(Strategy):
 
     def evaluate(
         self,
-        server_round: int,   # noqa: ARG002
+        server_round: int,   # noqa: ARG002: pas d'évaluation client à évaluer
         parameters: Parameters,  # noqa: ARG002
     ) -> Optional[Tuple[float, Dict[str, Scalar]]]:
         return None

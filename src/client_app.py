@@ -150,7 +150,7 @@ def _compute_metrics(proba: np.ndarray, y_val: np.ndarray, n_classes: int) -> Di
 
 # ── Point d'entrée Flower ────────────────────────────────────────────────────
 
-def client_fn(context: Context) -> Client:  # noqa: ARG001
+def client_fn(context: Context) -> Client:  # noqa: ARG001: context non utilisé
     return XGBoostFlowerClient()
 
 
