@@ -17,7 +17,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from typing import Dict, Tuple
-
+import time
 import numpy as np
 import xgboost as xgb
 from sklearn.metrics import log_loss, accuracy_score, f1_score
@@ -56,6 +56,7 @@ class XGBoostFlowerClient(Client):
         self._n_classes  = XGBOOST_PARAMS["num_class"]
         # cache : partition_id -> (train_dmat, val_dmat, y_val, n_train)
         self._cache: Dict[int, Tuple] = {}
+        self._total_time = 0.0
 
     # ── Chargement des données ──────────────────────────────────────────────
 
@@ -88,6 +89,9 @@ class XGBoostFlowerClient(Client):
         arrays     = parameters_to_ndarrays(ins.parameters)
         global_bst = deserialize_model(bytes(arrays[0].tobytes())) if arrays and len(arrays[0]) > 0 else None
 
+        # ── Timer start ─────────────────────────────────────
+        start_time = time.perf_counter()
+
         # Entraînement local — même logique que XGBoostClient.fit()
         if global_bst is None:
             bst = xgb.train(
@@ -102,6 +106,9 @@ class XGBoostFlowerClient(Client):
                 xgb_model=global_bst,
                 verbose_eval=False,
             )
+        # ── Timer end ───────────────────────────────────────
+        round_time = time.perf_counter() - start_time
+        self._total_time += round_time
 
         # Métriques locales pour affichage
         val_proba = bst.predict(val_dmat).reshape(-1, self._n_classes)
@@ -112,6 +119,7 @@ class XGBoostFlowerClient(Client):
             f"| LogLoss={metrics['log_loss']:.4f} "
             f"| Acc={metrics['accuracy']:.4f} "
             f"| Arbres={bst.num_boosted_rounds()}"
+            f"| Total time={self._total_time:.2f}s"
         )
 
         model_array = np.frombuffer(serialize_model(bst), dtype=np.uint8).copy()
@@ -125,6 +133,8 @@ class XGBoostFlowerClient(Client):
                 "accuracy":        metrics["accuracy"],
                 "f1_macro":        metrics["f1_macro"],
                 "partition_id":    float(pid),
+                "round_time_sec": round_time,
+                "total_time_sec": self._total_time,
             },
         )
 

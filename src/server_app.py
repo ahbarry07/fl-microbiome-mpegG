@@ -74,8 +74,8 @@ def evaluate_global(agg_proba: np.ndarray, sem_round: int, n_trees: int) -> Dict
     f1  = float(f1_score(_y_val, y_pred, average="macro", zero_division=0))
 
     result = {
-        "round": sem_round, "log_loss": ll,
-        "accuracy": acc, "f1_macro": f1, "n_trees": n_trees,
+        "round": sem_round, "n_trees": n_trees,
+        "log_loss": ll, "accuracy": acc, "f1_macro": f1, 
     }
     history.append(result)
     pd.DataFrame(history).to_csv(RESULTS_PATH / "federated_metrics.csv", index=False)
@@ -219,6 +219,7 @@ class SequentialXGBoostStrategy(Strategy):
 
     def _end_of_semantic_round(self, sem_round: int) -> None:
         """Soft voting sur les modèles intermédiaires + évaluation."""
+
         models_dict = self._round_models.get(sem_round, {})
         if not models_dict:
             return
@@ -228,10 +229,9 @@ class SequentialXGBoostStrategy(Strategy):
             for bst, _ in models_dict.values()
         ]
         weights = [n for _, n in models_dict.values()]
-
         agg_proba = soft_voting(probas, weights)
-
         n_trees = self.global_bst.num_boosted_rounds() if self.global_bst else 0
+
         result  = evaluate_global(agg_proba, sem_round, n_trees)
 
         if result["log_loss"] < self.best_log_loss:

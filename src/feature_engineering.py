@@ -325,9 +325,9 @@ def extract_fastq_features(fastq_path, k=3, chunk_size=200_000):
                     # Paires : les deux bases adjacentes doivent être valides
                     valid_pairs = valid_bases[:-1] & valid_bases[1:]
 
-                    # Indice paire : base1 * 4 + base2 -> [0, 15]
+                    # Indices des dinucléotides : b0*4 + b1, où b0 et b1 sont les indices des bases
                     di_idx = (encoded[:-1][valid_pairs].astype(np.uint8) * 4 + encoded[1:][valid_pairs].astype(np.uint8))
-                    di_accum += np.bincount(di_idx, minlength=16).astype(np.int64)
+                    di_accum += np.bincount(di_idx, minlength=16).astype(np.int64) 
 
                 del encoded   # libère espace memoire avant de traiter les qualités
 
@@ -492,11 +492,11 @@ def split_by_subject(df: pd.DataFrame,
     for _, group in subject_profile.groupby('dominant_type'):
         subjects = group[subject_col].values.copy()
         rng.shuffle(subjects)
-        n_val = max(1, int(len(subjects) * val_size))
+        n_val = max(1, int(len(subjects) * val_size)) # au moins 1 sujet par classe dans la validation
         val_subjects.extend(subjects[:n_val].tolist())
 
-    val_subjects   = set(val_subjects)
-    train_subjects = set(subject_profile[subject_col]) - val_subjects
+    val_subjects   = set(val_subjects) 
+    train_subjects = set(subject_profile[subject_col]) - val_subjects 
 
     train_df = df[df[subject_col].isin(train_subjects)].copy()
     val_df   = df[df[subject_col].isin(val_subjects)].copy()
