@@ -78,40 +78,74 @@ tabulaires (structurées en lignes et colonnes).
 
 ---
 
-## 5. La stratégie fédérée : entraînement séquentiel
+## 5. Les deux stratégies fédérées comparées
 
-### Le problème avec l'approche parallèle naïve
+Deux stratégies d'agrégation sont implémentées et comparables via `server_app.py`.
+La différence fondamentale porte sur **à partir de quel résiduel chaque arbre est entraîné**.
 
-Une approche simple serait de faire entraîner tous les clients **en parallèle** depuis le
-même modèle global, puis de sélectionner le meilleur modèle local comme nouveau modèle global.
+### Stratégie 1 — Entraînement séquentiel (Sequential XGBoost)
 
-Le problème : le "modèle global" ne verrait alors que les données d'**un seul client** par round.
-Les 4 autres clients contribueraient uniquement à l'évaluation, pas à la structure du modèle.
-Avec 500-877 échantillons par client au lieu des 2901 totaux, la qualité du modèle serait
-nettement inférieure au centralisé.
-
-### La solution : entraînement séquentiel avec ordre mélangé
-
-À chaque **round sémantique**, les clients s'enchaînent **l'un après l'autre** pour enrichir
-le modèle global :
+À chaque **round sémantique**, les clients s'enchaînent **l'un après l'autre**.
+Chaque client reçoit le modèle **mis à jour par le client précédent** :
 
 ```
-Round sémantique k (ordre mélangé : ex. [Client 3, Client 0, Client 4, Client 1, Client 2]) :
+Round sémantique k (ordre mélangé : ex. [C3, C0, C4, C1, C2]) :
 
-  → Client 3 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 0 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 4 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 1 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Client 2 entraîne 1 arbre sur ses données → modèle global mis à jour
-  → Fin du round : le modèle global a vu TOUTES les données ce round
+  Départ : M (modèle global courant)
+  C3 reçoit M    → entraîne 1 arbre sur résiduel(M,    données C3) → M'
+  C0 reçoit M'   → entraîne 1 arbre sur résiduel(M',   données C0) → M''
+  C4 reçoit M''  → entraîne 1 arbre sur résiduel(M'',  données C4) → M'''
+  C1 reçoit M''' → entraîne 1 arbre sur résiduel(M''', données C1) → M''''
+  C2 reçoit M''''→ entraîne 1 arbre sur résiduel(M'''',données C2) → M_new
 ```
 
-L'ordre est **mélangé aléatoirement à chaque round** (seed = 42 + numéro_round, reproductible)
-pour éviter qu'un client ne domine systématiquement.
+Chaque arbre corrige le **résiduel cumulatif** — il intègre les corrections de tous les
+clients précédents dans le même round. C'est du gradient boosting distribué pur.
 
-**Résultat** : après 20 rounds sémantiques × 5 clients × 1 arbre = **100 arbres**, le modèle
-global a appris de l'ensemble des 2901 échantillons de manière distribuée — comme le centralisé,
-mais sans que les données ne soient jamais partagées.
+L'ordre est **mélangé aléatoirement à chaque round** (seed = 42 + numéro_round,
+reproductible) pour éviter qu'un client ne domine systématiquement.
+
+**Résultat** : après 20 rounds × 5 clients × 1 arbre = **100 arbres**, le modèle global
+a appris séquentiellement de l'ensemble des 2 901 échantillons — équivalent à un XGBoost
+centralisé, sans jamais partager les données brutes.
+
+### Stratégie 2 — FedAvg parallèle avec Tree Merging
+
+Tous les clients reçoivent le **même modèle de départ** au début du round sémantique
+et entraînent indépendamment. Leurs nouveaux arbres sont ensuite **fusionnés** :
+
+```
+Round sémantique k (même ordre, mais tous partent de M) :
+
+  Snapshot : M (modèle global courant)
+  C3 reçoit M → entraîne 1 arbre sur résiduel(M, données C3) → arbre_C3
+  C0 reçoit M → entraîne 1 arbre sur résiduel(M, données C0) → arbre_C0
+  C4 reçoit M → entraîne 1 arbre sur résiduel(M, données C4) → arbre_C4
+  C1 reçoit M → entraîne 1 arbre sur résiduel(M, données C1) → arbre_C1
+  C2 reçoit M → entraîne 1 arbre sur résiduel(M, données C2) → arbre_C2
+
+  Fusion : M_new = M + arbre_C3 + arbre_C0 + arbre_C4 + arbre_C1 + arbre_C2
+```
+
+Tous les arbres du round corrigent **le même résiduel de départ M** — ils sont parallèles,
+pas séquentiels. La fusion consiste à **concaténer** (pas moyenner) les nouveaux arbres
+dans le modèle global, en conservant le `tree_info` (indice de classe par arbre).
+
+> **Pourquoi Tree Merging et pas FedAvg standard ?**
+> Le FedAvg de Flower fait une moyenne pondérée de paramètres numpy, ce qui n'a de sens
+> que pour les réseaux de neurones. XGBoost n'a pas de paramètres numériques à moyenner —
+> ses "paramètres" sont des arbres de décision. La fusion d'arbres est l'adaptation naturelle
+> de FedAvg pour les modèles à base d'arbres.
+
+### Comparaison des deux approches
+
+| Critère | Séquentiel | FedAvg parallèle |
+|---------|-----------|-----------------|
+| Résiduel de chaque arbre | cumulatif (intègre les clients précédents) | identique pour tous (même M de départ) |
+| Qualité du gradient boosting | optimale | redondante par round |
+| Influence de l'ordre des clients | oui | non |
+| Équivalent centralisé | ≈ XGBoost normal | ≈ XGBoost avec arbres ajoutés en batch |
+| Agrégation | mise à jour immédiate | concaténation en fin de round |
 
 ---
 
@@ -123,7 +157,7 @@ des rounds, la communication serveur-clients et la sérialisation des modèles.
 ### Architecture générale
 
 ```
-Flower Server (SequentialXGBoostStrategy)
+Flower Server (SequentialXGBoostStrategy  ou  ParallelXGBoostStrategy)
         │
         │  configure_fit()  →  FitIns(modèle_global, {target_partition, current_round})
         ▼
@@ -133,19 +167,19 @@ Flower Client (XGBoostFlowerClient)    ← num_supernodes=1, stateless
         ▼
 Flower Server
         │
-        │  aggregate_fit()  →  met à jour global_bst, accumule _round_models
+        │  aggregate_fit()  →  met à jour global_bst
         │                      → à la fin d'un round sémantique : _end_of_semantic_round()
         ▼
 ```
 
 ### Correspondance rounds Flower ↔ rounds sémantiques
 
-| Concept           | Valeur | Description |
-|-------------------|--------|-------------|
-| `N_SEMANTIC_ROUNDS` | 20   | Nombre de rounds sémantiques (boucles complètes sur tous les clients) |
-| `NUM_CLIENTS`       | 5    | Nombre de clients / partitions |
-| `NUM_LOCAL_ROUNDS`  | 1    | Arbres ajoutés par client par round Flower |
-| Rounds Flower totaux | 100 | `N_SEMANTIC_ROUNDS × NUM_CLIENTS` |
+| Concept             | Valeur | Description |
+|---------------------|--------|-------------|
+| `N_SEMANTIC_ROUNDS` | 20     | Nombre de rounds sémantiques (boucles complètes sur tous les clients) |
+| `NUM_CLIENTS`       | 5      | Nombre de clients / partitions |
+| `NUM_LOCAL_ROUNDS`  | 1      | Arbres ajoutés par client par round Flower |
+| Rounds Flower totaux | 100   | `N_SEMANTIC_ROUNDS × NUM_CLIENTS` |
 
 Chaque **round Flower** correspond à **1 étape** d'un round sémantique :
 un seul client entraîne 1 arbre supplémentaire.
@@ -160,7 +194,8 @@ Round Flower 6  →  sem_round=2, étape 1/5
 Round Flower 100 → sem_round=20, étape 5/5 → fin du round sémantique → évaluation
 ```
 
-La table de correspondance `round_info` est précalculée à l'initialisation :
+La table de correspondance `round_info` est précalculée à l'initialisation (identique
+dans les deux stratégies) :
 
 ```python
 # Précalcul : flower_round -> (sem_round, étape, target_partition)
@@ -180,35 +215,83 @@ il reçoit `target_partition` dans `FitIns.config` à chaque round et charge les
 correspondantes à la demande (avec cache local `_cache`).
 
 Cela évite d'instancier 5 processus séparés tout en permettant d'orchestrer 5 partitions.
+Le parallélisme de la stratégie FedAvg est donc **simulé** : `configure_fit` envoie
+le snapshot `_round_start_bst` à chaque client du round (au lieu du modèle progressif),
+ce qui reproduit le comportement d'un entraînement parallèle réel.
 
-### Méthodes de la stratégie
+### Méthodes de `SequentialXGBoostStrategy`
 
 | Méthode | Rôle |
 |---------|------|
 | `initialize_parameters` | Retourne `None` — les clients partent de zéro au round 1 |
-| `configure_fit` | Sélectionne 1 client, sérialise le modèle global, envoie `target_partition` |
-| `aggregate_fit` | Désérialise le modèle client, met à jour `global_bst`, accumule `_round_models` ; déclenche `_end_of_semantic_round` à chaque fin de round sémantique |
-| `configure_evaluate` | Retourne `[]` — l'évaluation est faite côté serveur |
+| `configure_fit` | Sélectionne 1 client, envoie `global_bst` courant + `target_partition` |
+| `aggregate_fit` | Désérialise le modèle, met à jour `global_bst` immédiatement, accumule `_round_models` ; déclenche `_end_of_semantic_round` en fin de round |
+| `configure_evaluate` | Retourne `[]` — évaluation faite côté serveur |
 | `aggregate_evaluate` | Retourne `None` — non utilisé |
-| `evaluate` | Retourne `None` — non utilisé (évaluation gérée dans `aggregate_fit`) |
+| `evaluate` | Retourne `None` — non utilisé |
+
+### Méthodes de `ParallelXGBoostStrategy`
+
+| Méthode | Rôle |
+|---------|------|
+| `initialize_parameters` | Retourne `None` |
+| `configure_fit` | Prend un snapshot `_round_start_bst` à l'étape 0, envoie CE snapshot à tous les clients du round (parallélisme simulé) |
+| `aggregate_fit` | Accumule les modèles clients dans `_pending` ; déclenche `_end_of_semantic_round` en fin de round |
+| `configure_evaluate` | Retourne `[]` |
+| `aggregate_evaluate` | Retourne `None` |
+| `evaluate` | Retourne `None` |
 
 ### Évaluation serveur (`_end_of_semantic_round`)
 
 À la fin de chaque round sémantique (quand les 5 clients ont entraîné), le serveur :
 
-1. Récupère les modèles intermédiaires accumulés dans `_round_models[sem_round]`
-2. Fait un **soft voting pondéré** sur ces modèles (voir section 7)
-3. Calcule `log_loss`, `accuracy`, `f1_macro` sur le val set global (chargé une seule fois)
+**Séquentiel :**
+1. Récupère les modèles intermédiaires dans `_round_models[sem_round]`
+2. Fait un **soft voting pondéré** sur leurs prédictions (évaluation uniquement)
+3. Calcule `log_loss`, `accuracy`, `f1_macro` sur le val set global
 4. Sauvegarde les métriques dans `results/metrics/federated_metrics.csv`
-5. Sauvegarde le meilleur modèle (log_loss minimal) dans `models/federated/best_global_model.cubj`
+5. Sauvegarde le meilleur modèle dans `models/federated/best_global_model.cubj`
+
+**FedAvg parallèle :**
+1. Appelle `merge_xgb_trees(_round_start_bst, _pending[sem_round])` → `global_bst` fusionné
+2. Fait un **soft voting pondéré** sur les modèles individuels des clients (évaluation uniquement)
+3. Calcule `log_loss`, `accuracy`, `f1_macro` sur le val set global
+4. Sauvegarde les métriques dans `results/metrics/fedavg_metrics.csv`
+5. Sauvegarde le meilleur modèle dans `models/federated/best_global_model_fedavg.cubj`
 
 ```python
-# Évaluation déclenchée dans aggregate_fit() à chaque fin de round sémantique
+# Déclenchement dans aggregate_fit() à chaque fin de round sémantique
 if step == self.n_clients - 1:
     self._end_of_semantic_round(sem_round)
 ```
 
-### Boosting incrémental
+### Tree Merging — détail technique
+
+La fusion des arbres XGBoost manipule directement le format JSON interne du modèle :
+
+```python
+def merge_xgb_trees(start_bst, client_models):
+    # Extraire les arbres ajoutés par chaque client au-delà du snapshot de départ
+    for client_bst, _ in client_models:
+        c = json.loads(client_bst.save_raw("json"))["learner"]["gradient_booster"]["model"]
+        all_new_trees.extend(c["trees"][n_start_trees:])
+        all_new_info.extend(c["tree_info"][n_start_trees:])
+
+    # Concaténer dans le modèle fusionné
+    m["trees"].extend(all_new_trees)
+    m["tree_info"].extend(all_new_info)
+    # Renommer les ids (séquentiels) et reconstruire iteration_indptr
+    for i, tree in enumerate(m["trees"]): tree["id"] = i
+    m["iteration_indptr"] = list(range(0, len(m["trees"]) + 1, step))
+```
+
+Deux points critiques :
+- Les ids de chaque arbre doivent être **renumérotés séquentiellement** après fusion
+  (chaque client retourne des arbres avec les mêmes ids → doublons → segfault XGBoost).
+- `iteration_indptr` doit être **reconstruit** : XGBoost vérifie que
+  `indptr[-1] == num_trees` ; la concaténation augmente `num_trees` sans toucher `indptr`.
+
+### Boosting incrémental (côté client)
 
 Le client reçoit le modèle global courant et l'utilise comme point de départ :
 
@@ -225,23 +308,27 @@ transmis via les paramètres Flower (`ndarrays_to_parameters`).
 
 ---
 
-## 7. L'agrégation des prédictions : Soft Voting
+## 7. L'évaluation par Soft Voting
 
-Une fois tous les clients entraînés dans un round sémantique, les **prédictions finales**
-sont produites par **soft voting pondéré** : chaque client prédit des probabilités pour les
-4 classes, et ces probabilités sont moyennées en pondérant par la taille du dataset local.
+Le **soft voting pondéré** est utilisé **uniquement pour l'évaluation** à la fin de chaque
+round sémantique — il ne sert pas à construire le modèle global.
+
+À la fin du round, on dispose des modèles intermédiaires de chaque client. Plutôt que
+d'évaluer un seul de ces modèles (ce qui biaiserait vers le dernier client dans l'ordre),
+on moyenne leurs prédictions en probabilité :
 
 ```
 p_global(x) = Σ_i  (n_i / N) × p_i(x)
 
   où :
-    p_i(x)   = probabilités prédites par le modèle intermédiaire du client i
+    p_i(x)   = probabilités prédites par le modèle du client i
     n_i      = nombre d'échantillons du client i
     N        = nombre total d'échantillons (somme de tous les clients)
 ```
 
-Un client avec plus de données a plus de poids dans la prédiction finale. Cette agrégation
-n'implique aucun échange de données brutes — seulement des vecteurs de probabilités.
+Un client avec plus de données a plus de poids dans la métrique d'évaluation.
+Cette agrégation n'implique aucun échange de données brutes — seulement des vecteurs
+de probabilités calculés sur le val set global (chargé une seule fois côté serveur).
 
 ---
 
@@ -275,7 +362,8 @@ puis appliqué aux prédictions du jeu de test.
 | Centralisé (XGBoost)                                | 0.0368         | 0.9863         | 0.9867         |
 | Fédéré v1 (20 rounds, parallèle, eta=0.1)           | 0.2107         | 0.9840         | 0.9849         |
 | Fédéré v2 (100 rounds, parallèle, eta=0.05)         | 0.0382         | 0.9886         | 0.9889         |
-| **Fédéré v3 (100 rounds, séquentiel, eta=0.05)**    | **0.0076**     | **0.9977**     | **0.9978**     |
+| **Fédéré v3 — Séquentiel (100 rounds, eta=0.05)**   | **0.0076**     | **0.9977**     | **0.9978**     |
+| Fédéré v4 — FedAvg Tree Merging (100 rounds)        | en cours...    | en cours...    | en cours...    |
 
 **Scores Zindi (jeu de test public/privé) :**
 
@@ -284,6 +372,7 @@ puis appliqué aux prédictions du jeu de test.
 | Centralisé   | 0.003741    | 0.024795    |
 | Fédéré v2    | 0.043446    | 0.049010    |
 | Fédéré v3    | en cours... | en cours... |
+| Fédéré v4    | en cours... | en cours... |
 
 ---
 
@@ -299,19 +388,24 @@ Extraction de features (Kraken2, k-mers, stats qualité)
 Partitionnement round-robin par SubjectID → 5 partitions
         │
         ▼
-┌──────────────────────────────────────────────────────────┐
-│       SIMULATION FLOWER (100 rounds Flower)              │
-│                                                          │
-│  Round Flower r  (= étape d'un round sémantique) :       │
-│    configure_fit()  → envoie global_bst + target_partition│
-│    client.fit()     → xgb.train(global_bst, 1 arbre)     │
-│    aggregate_fit()  → met à jour global_bst              │
-│                                                          │
-│  Toutes les 5 étapes (fin de round sémantique) :         │
-│    Soft voting pondéré sur _round_models                 │
-│    Évaluation val set → log_loss / accuracy / F1         │
-│    Sauvegarde du meilleur modèle                         │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│         SIMULATION FLOWER (100 rounds Flower × 2 stratégies)     │
+│                                                                  │
+│  ── Stratégie A : Séquentielle ──────────────────────────────    │
+│  Round Flower r :                                                │
+│    configure_fit()  → envoie global_bst courant + partition      │
+│    client.fit()     → xgb.train(global_bst, 1 arbre)            │
+│    aggregate_fit()  → global_bst = modèle client (immédiat)     │
+│  Fin round sém.    → soft voting (éval) + save best_model.cubj  │
+│                                                                  │
+│  ── Stratégie B : FedAvg Parallèle ──────────────────────────    │
+│  Round Flower r :                                                │
+│    configure_fit()  → envoie _round_start_bst (snapshot) + part.│
+│    client.fit()     → xgb.train(snapshot, 1 arbre)              │
+│    aggregate_fit()  → accumule modèles dans _pending            │
+│  Fin round sém.    → merge_xgb_trees() + soft voting (éval)     │
+│                      + save best_model_fedavg.cubj              │
+└──────────────────────────────────────────────────────────────────┘
         │
         ▼
 Calibration en température (T optimisé sur val)
@@ -327,19 +421,23 @@ Prédictions test → soumission Zindi (CSV)
 ```
 src/
   task.py          — chargement des données, partitionnement round-robin,
-                     hyperparamètres XGBoost, sérialisation/désérialisation modèle
+                     hyperparamètres XGBoost, sérialisation/désérialisation modèle,
+                     soft_voting(), evaluate_global(), merge_xgb_trees()
   client_app.py    — XGBoostFlowerClient : fit() (entraînement local incrémental),
                      evaluate() (stub, évaluation faite côté serveur)
-  server_app.py    — SequentialXGBoostStrategy : configure_fit, aggregate_fit,
-                     _end_of_semantic_round (soft voting + éval), evaluate_global
+  server_app.py    — SequentialXGBoostStrategy (séquentiel + soft voting)
+                     ParallelXGBoostStrategy (FedAvg parallèle + tree merging)
+                     app / parallel_app : points d'entrée ServerApp
 
 notebook/
-  05_federated_model.ipynb — simulation Flower (run_simulation), visualisations,
-                             calibration en température, soumission Zindi
+  05_federated_model.ipynb — simulation Flower (run_simulation × 2 stratégies),
+                             visualisations comparatives, calibration, soumission Zindi
 
 models/federated/
-  best_global_model.cubj   — meilleur modèle global (log_loss minimal sur val)
+  best_global_model.cubj        — meilleur modèle séquentiel (log_loss minimal sur val)
+  best_global_model_fedavg.cubj — meilleur modèle FedAvg (log_loss minimal sur val)
 
 results/metrics/
-  federated_metrics.csv    — log_loss, accuracy, F1-macro par round sémantique
+  federated_metrics.csv  — log_loss, accuracy, F1-macro par round sémantique (séquentiel)
+  fedavg_metrics.csv     — log_loss, accuracy, F1-macro par round sémantique (FedAvg)
 ```

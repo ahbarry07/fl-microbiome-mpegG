@@ -24,14 +24,18 @@ NUM_CLIENTS = 5 est un bon compromis pour :
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
-
+from typing import Dict, List, Tuple, Optional
+import json
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import log_loss, accuracy_score, f1_score
+
 
 PROCESSED_PATH = Path(__file__).resolve().parent.parent / "data" / "processed"
+RESULTS_PATH = Path(__file__).resolve().parent.parent / "results" / "metrics"
+RESULTS_PATH.mkdir(parents=True, exist_ok=True)
 
 NUM_CLIENTS = 5   # nombre de clients fédérés
 
@@ -50,6 +54,9 @@ XGBOOST_PARAMS: Dict = {
 }
 
 NUM_LOCAL_ROUNDS = 1  # séquentiel : 5 clients × 1 arbre × N_SEMANTIC_ROUNDS
+
+history:        List[Dict] = []
+history_fedavg: List[Dict] = []
 
 
 def load_data(processed_path: Path = PROCESSED_PATH) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], LabelEncoder]:
@@ -139,3 +146,101 @@ def deserialize_model(data: bytes) -> xgb.Booster:
     return bst
 
 
+
+def soft_voting(probas: List[np.ndarray], weights: List[int]) -> np.ndarray:
+    """Agrège les probabilités par soft voting pondéré : p = Σ (n_i/N) * p_i."""
+    total = sum(weights)
+    agg   = np.zeros_like(probas[0])
+    for proba, w in zip(probas, weights):
+        agg += (w / total) * proba
+    return agg
+
+
+def evaluate_global(agg_proba: np.ndarray, sem_round: int, n_trees: int, filename: str = "federated_metrics.csv") -> Dict:
+    """Évalue les probabilités agrégées sur le val set et sauvegarde."""
+    y_pred = agg_proba.argmax(axis=1)
+    ll  = float(log_loss(_y_val, agg_proba, labels=list(range(_n_classes))))
+    acc = float(accuracy_score(_y_val, y_pred))
+    f1  = float(f1_score(_y_val, y_pred, average="macro", zero_division=0))
+
+    result = {
+        "round": sem_round, "n_trees": n_trees,
+        "log_loss": ll, "accuracy": acc, "f1_macro": f1, 
+    }
+    history.append(result)
+    pd.DataFrame(history).to_csv(RESULTS_PATH / filename, index=False)
+    print(f"  -> Global | LogLoss={ll:.4f} | Acc={acc:.4f} | F1={f1:.4f} | Arbres={n_trees}")
+    return result
+
+
+
+def merge_xgb_trees(start_bst: Optional[xgb.Booster], client_models: List[Tuple[xgb.Booster, int]],) -> Optional[xgb.Booster]:
+    """
+    Fusionne les nouveaux arbres de chaque client dans le modèle global.
+
+    Tous les clients ont entraîné depuis le même start_bst (parallélisme simulé).
+    Pour chaque client, on extrait les arbres ajoutés au-delà du modèle de départ
+    et on les concatène dans le modèle fusionné.
+
+    Le tree_info (indice de classe par arbre) est conservé tel quel,
+    ce qui garantit des prédictions cohérentes pour multi:softprob.
+    """
+    if not client_models:
+        return start_bst
+
+    if start_bst is None:
+        # Round 1 : clients ont entraîné depuis zéro
+        n_start_trees = 0
+        base_raw      = client_models[0][0].save_raw("json") # Juste pour obtenir la structure de base du modèle (paramètres, tree_info) sans les arbres
+        merged_data   = json.loads(base_raw)
+        m = merged_data["learner"]["gradient_booster"]["model"] 
+        # Lire le step AVANT de vider les arbres
+        orig_indptr = m.get("iteration_indptr", [])
+        m["trees"]     = []
+        m["tree_info"] = []
+        m["gbtree_model_param"]["num_trees"] = "0"
+    else:
+        start_raw   = start_bst.save_raw("json")
+        merged_data = json.loads(start_raw)
+        m = merged_data["learner"]["gradient_booster"]["model"]
+        n_start_trees = int(m["gbtree_model_param"]["num_trees"])
+        orig_indptr = m.get("iteration_indptr", []) 
+
+    # Pas par itération = num_class * num_parallel_tree (4 pour softprob 4 classes)
+    step = (orig_indptr[1] - orig_indptr[0]) if len(orig_indptr) >= 2 else _n_classes
+
+    all_new_trees: list = []
+    all_new_info:  list = []
+    for client_bst, _ in client_models:
+        c = json.loads(client_bst.save_raw("json"))["learner"]["gradient_booster"]["model"]  
+        all_new_trees.extend(c["trees"][n_start_trees:])
+        all_new_info.extend(c["tree_info"][n_start_trees:])
+
+    if not all_new_trees: 
+        return start_bst
+
+    m["trees"].extend(all_new_trees)
+    m["tree_info"].extend(all_new_info)
+
+    # Re-indexer les arbres fusionnés : XGBoost vérifie que les IDs sont consécutifs à partir de 0
+    for i, tree in enumerate(m["trees"]):
+        tree["id"] = i
+    total_trees = len(m["trees"])
+    m["gbtree_model_param"]["num_trees"] = str(total_trees)
+
+    # Recalculer iteration_indptr pour refléter les nouveaux arbres fusionnés
+    m["iteration_indptr"] = list(range(0, total_trees + 1, step))
+
+    merged_bst = xgb.Booster()
+    merged_bst.load_model(bytearray(json.dumps(merged_data).encode()))
+    return merged_bst
+
+
+
+
+# Val set chargé une seule fois pour l'évaluation serveur
+_, _val_df, _, _feature_cols, _le = load_data()
+_X_val       = _val_df[_feature_cols].values
+_y_val       = _le.transform(_val_df["SampleType"].values)
+_val_dmatrix = xgb.DMatrix(_X_val, label=_y_val)
+_n_classes   = len(_le.classes_)

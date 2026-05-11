@@ -2,7 +2,7 @@
 # **Federated Learning for Microbiome Body-Site Classification from MPEG-G Data**
 
 > MPEG-G Microbiome Classification Challenge — Zindi Africa  
-> Sequential XGBoost Federated Learning with Soft Voting Aggregation via Flower
+> Federated XGBoost via Flower — Sequential Training & FedAvg Tree Merging
 
 ---
 
@@ -34,27 +34,30 @@ This project tackles the [MPEG-G Microbiome Classification Challenge](https://zi
 
 - **End-to-end pipeline** from compressed MPEG-G files (`.mgb`) to competition-ready submission
 - **208 biologically informed features** spanning nucleotide composition, k-mers, dinucleotide relative frequencies, sequence complexity, and Kraken2 taxonomic classification
-- **Sequential federated XGBoost** strategy via [Flower](https://flower.ai/): clients improve a shared model one-by-one per round, rather than averaging independent models — resulting in better convergence than classical parallel aggregation
-- **Soft voting aggregation** preserving probability calibration across clients
+- **Two federated XGBoost strategies** implemented and compared via [Flower](https://flower.ai/):
+  - `SequentialXGBoostStrategy` — clients train one-by-one, each building on the previous client's updated model (true sequential gradient boosting across all data)
+  - `ParallelXGBoostStrategy` — all clients start from the same snapshot, train independently, and their new trees are merged (FedAvg adapted for XGBoost via Tree Merging)
+- **Soft voting** for per-round evaluation: weighted average of client probability predictions on the validation set
 - **Subject-level train/validation split** to prevent data leakage (no samples from the same subject appear in both sets)
-- Federated model **matches or outperforms the centralized baseline** after 20 semantic rounds
+- Sequential federated model **outperforms the centralized baseline** after 20 semantic rounds
 
 ---
 
 ## Results
 
-| Model | Log Loss | Accuracy | F1-macro |
+| Model | Log Loss (val) | Accuracy (val) | F1-macro (val) |
 |---|---|---|---|
 | Centralized XGBoost (baseline) | 0.0368 | 98.63% | 0.9867 |
-| **Federated v3 — Round 20 (final)** | **0.0379** | **99.32%** | **0.9932** |
-| Federated v3 — Calibrated (T=0.6979) | **0.0261** | — | — |
+| **Federated v3 — Sequential (round 20)** | **0.0076** | **99.77%** | **0.9978** |
+| Federated v4 — FedAvg Tree Merging | in progress... | in progress... | in progress... |
 
 **Zindi Public Leaderboard scores (test set):**
 
 | Submission | Public Score | Private Score |
 |---|---|---|
 | Centralized XGBoost | 0.003741144 | 0.024794668 |
-| Federated  | 0.016999233 | 0.03279972 |
+| Federated v3 (Sequential) | in progress... | in progress... |
+| Federated v4 (FedAvg) | in progress... | in progress... |
 
 > Validation metrics computed on a subject-held-out set (12 subjects, 438 samples). Lower log loss is better.
 
@@ -102,8 +105,8 @@ fl-microbiome-mpegG/
 │   └── 05_federated_model.ipynb            # Flower FL simulation + submission
 ├── src/
 │   ├── client_app.py          # Flower client (XGBoostFlowerClient)
-│   ├── server_app.py          # Flower server (SequentialXGBoostStrategy)
-│   ├── task.py                # Shared utilities, constants, data loading
+│   ├── server_app.py          # Flower server: SequentialXGBoostStrategy + ParallelXGBoostStrategy
+│   ├── task.py                # Shared utilities, constants, data loading, soft_voting, merge_xgb_trees
 │   ├── data_processing.py     # MPEG-G decompression, raw feature extraction
 │   └── feature_engineering.py # K-mers, dinucleotides, taxonomy, complexity
 ├── docs/
@@ -114,9 +117,9 @@ fl-microbiome-mpegG/
 │   └── processed/             # Generated feature CSVs (not tracked in git)
 ├── models/
 │   ├── centralized/           # xgboost_centralized.joblib, label_encoder.joblib
-│   └── federated/             # best_global_model.cubj
+│   └── federated/             # best_global_model.cubj, best_global_model_fedavg.cubj
 ├── results/
-│   ├── metrics/               # centralized_metrics.csv, federated_metrics.csv
+│   ├── metrics/               # centralized_metrics.csv, federated_metrics.csv, fedavg_metrics.csv
 │   └── figures/               # EDA plots, model comparison charts
 ├── main.py                    # Entry point for Flower FL simulation
 ├── pyproject.toml             # Project dependencies (uv)
@@ -321,17 +324,17 @@ Training samples are distributed across **5 clients** via round-robin assignment
 | 3 | 559 |
 | 4 | 877 |
 
-#### Federated strategy — Sequential XGBoost
+#### Two federated strategies compared
 
-Unlike classical **parallel** FL (FedAvg), where each client trains independently and their models are averaged, this project uses **sequential training**:
+**Strategy A — Sequential XGBoost (`app`)**
 
-1. Within each semantic round, clients are randomly ordered (seed = 42 + round)
-2. Each client receives the current shared model and trains **1 additional tree** on top of it
-3. After all 5 clients have trained, the server aggregates via **soft voting**
+Within each semantic round, clients are randomly ordered (seed = 42 + round). Each client receives the model **updated by the previous client** and trains 1 additional tree on top of it. Trees are sequentially dependent: each one corrects the cumulative residual from all previous clients.
 
-This ensures every sample contributes to model improvement every round, rather than only one fifth of the data at a time.
+**Strategy B — FedAvg Tree Merging (`parallel_app`)**
 
-**Configuration:**
+All clients receive the **same model snapshot** at the start of the round and train independently. Their new trees are then **concatenated** (not averaged) into the global model. Since XGBoost has no numerical weights to average, Tree Merging is the natural FedAvg adaptation for tree-based models.
+
+**Common configuration:**
 
 | Parameter | Value |
 |---|---|
@@ -344,95 +347,86 @@ This ensures every sample contributes to model improvement every round, rather t
 | XGBoost `max_depth` | 6 |
 | Objective | `multi:softprob` (4 classes) |
 
-#### Soft voting aggregation
+#### Soft voting — evaluation only
 
-At the end of each semantic round, the server collects per-client probability predictions on the validation set and aggregates them using **sample-weighted soft voting**:
+At the end of each semantic round, the server evaluates by computing a **sample-weighted soft vote** over per-client probability predictions on the shared validation set:
 
 ```
-p_global = Σ (n_i / N) × p_i
+p_eval = Σ (n_i / N) × p_i
 ```
 
-where `n_i` = number of training samples for client `i`, `N` = total training samples, `p_i` = client probability predictions. This weighting gives more influence to clients with more representative data.
+This gives a balanced view across all clients. The global model itself is built differently per strategy (sequential update vs. tree merge) — soft voting is only used to compute `log_loss`, `accuracy`, and `F1-macro` metrics.
 
-#### Training convergence
+#### Results
 
-| Round | Log Loss | Accuracy |
+| Round | Sequential Log Loss | Sequential Accuracy |
 |---|---|---|
-| 1 | 1.18 | — |
-| 2 | 0.86 | — |
-| 5 | 0.40 | — |
+| 1  | ~1.18 | — |
+| 5  | ~0.40 | — |
 | 10 | ~0.07 | — |
-| 20 (final) | **0.0379** | **99.32%** |
+| 20 | **0.0076** | **99.77%** |
 
-Model stabilizes around round 10; rounds 10–20 provide fine-grained refinement.
+FedAvg Tree Merging results: in progress.
 
 #### Temperature calibration
 
 Post-training probability calibration via temperature scaling:
 
 - Grid search over T ∈ [0.1, 3.0] on validation set
-- **Optimal temperature: T = 0.6979**
-- Calibrated log loss: **0.0261** (improvement of ~0.012 vs uncalibrated)
-
-#### Comparison: Federated vs. Centralized
-
-| Approach | Log Loss | Accuracy | F1-macro |
-|---|---|---|---|
-| Centralized XGBoost | 0.0368 | 98.63% | 0.9867 |
-| Federated (round 20) | 0.0379 | 99.32% | 0.9932 |
-
-The federated model achieves **higher accuracy and F1** than the centralized baseline while keeping raw data local to each client.
+- Optimal temperature minimizes log loss on validation
+- Applied to test set predictions before submission
 
 **Outputs:**
-- `models/federated/best_global_model.cubj`
-- `results/metrics/federated_metrics.csv`
+- `models/federated/best_global_model.cubj` — best sequential model
+- `models/federated/best_global_model_fedavg.cubj` — best FedAvg model
+- `results/metrics/federated_metrics.csv` — per-round metrics (sequential)
+- `results/metrics/fedavg_metrics.csv` — per-round metrics (FedAvg)
 - `data/submission/submission_federated.csv`
 
 ---
 
 ## Federated Architecture
 
+Two `ServerApp` entry points are exposed in `server_app.py`:
+
+```python
+app          = ServerApp(server_fn=server_fn)          # Sequential
+parallel_app = ServerApp(server_fn=parallel_server_fn) # FedAvg Tree Merging
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Flower Server                          │
-│                                                          │
-│  SequentialXGBoostStrategy                               │
-│  ┌────────────────────────────────┐                      │
-│  │  round_info: pre-calculated    │                      │
-│  │  mapping flower_round →        │                      │
-│  │  (sem_round, step, partition)  │                      │
-│  │                                │                      │
-│  │  configure_fit() →             │                      │
-│  │    send global_bst + target    │                      │
-│  │                                │                      │
-│  │  aggregate_fit() →             │                      │
-│  │    update global_bst           │                      │
-│  │    accumulate _round_models    │                      │
-│  │                                │                      │
-│  │  _end_of_semantic_round() →    │                      │
-│  │    soft_voting()               │                      │
-│  │    evaluate_global()           │                      │
-│  │    save best model             │                      │
-│  └────────────────────────────────┘                      │
-└──────────────────────────────────────────────────────────┘
-        │   FitIns (global_bst, target_partition)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Flower Server                                                  │
+│                                                                 │
+│  Strategy A — SequentialXGBoostStrategy                         │
+│    configure_fit()  → send global_bst (updated each step)       │
+│    aggregate_fit()  → global_bst = client model (immediate)     │
+│    _end_of_semantic_round() → soft_voting() → eval → save       │
+│                                                                 │
+│  Strategy B — ParallelXGBoostStrategy                           │
+│    configure_fit()  → send _round_start_bst (snapshot)          │
+│    aggregate_fit()  → accumulate in _pending                    │
+│    _end_of_semantic_round() → merge_xgb_trees() → eval → save  │
+└─────────────────────────────────────────────────────────────────┘
+        │   FitIns (model_bytes, {target_partition, current_round})
         ▼
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ...
 │  Client 0    │  │  Client 1    │  │  Client 2    │
-│              │  │              │  │              │
 │ 561 samples  │  │ 551 samples  │  │ 353 samples  │
-│              │  │              │  │              │
 │ fit():       │  │ fit():       │  │ fit():       │
-│  load part.  │  │  load part.  │  │  load part.  │
 │  train 1 tree│  │  train 1 tree│  │  train 1 tree│
 │  return bst  │  │  return bst  │  │  return bst  │
 └──────────────┘  └──────────────┘  └──────────────┘
-        │   FitRes (serialized booster, n_samples)
+        │   FitRes (serialized booster, n_samples, metrics)
         ▼
-┌──────────────────────────────────────────────────────────┐
-│  Semantic round end → soft_voting() → val evaluation     │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  End of semantic round:                                         │
+│  A → soft_voting(intermediate models) → log_loss / acc / F1    │
+│  B → merge_xgb_trees() + soft_voting(client models) → metrics  │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Single virtual client (`num_supernodes=1`):** a single `XGBoostFlowerClient` instance handles all 5 partitions by receiving `target_partition` in `FitIns.config` each round and caching partition data locally.
 
 ---
 
@@ -516,7 +510,17 @@ jupyter notebook notebook/05_federated_model.ipynb
 uv run python main.py
 ```
 
-This launches the Flower simulation with 5 clients, 20 semantic rounds, and logs per-round metrics to `results/metrics/federated_metrics.csv`.
+This launches the sequential Flower simulation with 5 clients, 20 semantic rounds, and logs per-round metrics to `results/metrics/federated_metrics.csv`.
+
+To run the FedAvg parallel simulation from the notebook:
+
+```python
+from server_app import parallel_app, client_app
+from flwr.simulation import run_simulation
+
+run_simulation(server_app=parallel_app, client_app=client_app, num_supernodes=1)
+# → results/metrics/fedavg_metrics.csv, models/federated/best_global_model_fedavg.cubj
+```
 
 ---
 
@@ -555,7 +559,7 @@ Full dependency list: [`pyproject.toml`](pyproject.toml)
 
 ## Documentation
 
-- [`docs/federated_approach.md`](docs/federated_approach.md) — detailed FL architecture, strategy design decisions, hyperparameter choices, and results progression (v1 → v3)
+- [`docs/federated_approach.md`](docs/federated_approach.md) — detailed FL architecture, both strategies (sequential vs. FedAvg tree merging), design decisions, hyperparameter choices, and results progression (v1 → v4)
 - [`docs/feature_description.md`](docs/feature_description.md) — complete feature catalog with biological justification and literature references for each feature family
 
 ---
